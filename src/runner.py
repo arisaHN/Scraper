@@ -19,16 +19,18 @@ def run_brand(brand_id: int, brand_name: str, site: str, ScraperClass) -> int:
     count = 0
     try:
         kwargs = {}
+        retailer = None
         if site == "bazaarvoice":
             kwargs["passkey"] = settings.BV_PASSKEY_DOUGLAS
             kwargs["locale"] = settings.BV_LOCALE
+            retailer = settings.BV_RETAILER_DOUGLAS
         scraper = ScraperClass(**kwargs)
         products = scraper.discover_products(brand_name)
         print(f"  [{site}] {len(products)} products found", flush=True)
 
         for i, prod_data in enumerate(products, 1):
             try:
-                prod_id = _upsert_product(brand_id, site, prod_data)
+                prod_id = _upsert_product(brand_id, site, prod_data, retailer=retailer)
                 prod_reviews = 0
                 for review in scraper.scrape_reviews(prod_data):
                     _upsert_review(prod_id, review)
@@ -39,6 +41,44 @@ def run_brand(brand_id: int, brand_name: str, site: str, ScraperClass) -> int:
             except Exception as exc:
                 print(f"  [{site}] ({i}/{len(products)}) SKIP {prod_data.get('external_id')} — {exc}", flush=True)
 
+        _finish_run(run_id, RunStatus.success, count)
+    except Exception as exc:
+        _finish_run(run_id, RunStatus.failed, count, str(exc)[:2000])
+        raise
+
+    return count
+
+
+def run_single_product(brand_id: int, brand_name: str, site: str, ScraperClass, product_id: str) -> int:
+    """Scrape one specific product by external ID. Skips discovery. Returns review count."""
+    with get_session() as session:
+        run = ScrapeRun(brand_id=brand_id, site=site, status=RunStatus.running)
+        session.add(run)
+        session.flush()
+        run_id = run.id
+
+    count = 0
+    try:
+        kwargs = {}
+        retailer = None
+        if site == "bazaarvoice":
+            kwargs["passkey"] = settings.BV_PASSKEY_DOUGLAS
+            kwargs["locale"] = settings.BV_LOCALE
+            retailer = settings.BV_RETAILER_DOUGLAS
+        scraper = ScraperClass(**kwargs)
+
+        with get_session() as session:
+            existing = session.query(Product).filter_by(source_site=site, external_id=product_id).first()
+            product_name = existing.name if existing else product_id
+
+        prod_data = {"external_id": product_id, "name": product_name, "source_url": ""}
+        prod_id = _upsert_product(brand_id, site, prod_data, retailer=retailer)
+
+        for review in scraper.scrape_reviews(prod_data):
+            _upsert_review(prod_id, review)
+            count += 1
+
+        print(f"  [{site}] {product_name[:50]} — {count} reviews", flush=True)
         _finish_run(run_id, RunStatus.success, count)
     except Exception as exc:
         _finish_run(run_id, RunStatus.failed, count, str(exc)[:2000])
@@ -67,7 +107,7 @@ def run_all_sites(brand_name: str) -> dict[str, int]:
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _upsert_product(brand_id: int, site: str, prod_data: dict) -> int:
+def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = None) -> int:
     with get_session() as session:
         stmt = (
             pg_insert(Product)
@@ -77,6 +117,7 @@ def _upsert_product(brand_id: int, site: str, prod_data: dict) -> int:
                 name=prod_data["name"],
                 source_url=prod_data.get("source_url"),
                 external_id=prod_data.get("external_id"),
+                retailer=retailer,
             )
             .on_conflict_do_nothing(constraint="uq_product_site_external")
             .returning(Product.id)
