@@ -6,22 +6,39 @@ from .database import get_session
 from .models import Brand, Product, Review
 
 
-def export_brand(brand_name: str, fmt: str = "csv", output_path: str = None) -> str:
+def _normalize_whitespace(s: str) -> str:
+    import unicodedata
+    return " ".join(unicodedata.normalize("NFKC", s).split())
+
+
+def export_brand(
+    brand_name: str,
+    fmt: str = "csv",
+    output_path: str = None,
+    product_filter: str = None,
+    product_id_filter: int = None,
+) -> str:
     with get_session() as session:
         brand = session.query(Brand).filter_by(name=brand_name).first()
         if not brand:
             raise ValueError(f"Brand '{brand_name}' not found.")
-        rows = (
-            session.query(Review, Product.name, Product.source_url)
+        query = (
+            session.query(Review, Product.id, Product.name, Product.source_url, Product.retailer)
             .join(Product, Review.product_id == Product.id)
             .filter(Product.brand_id == brand.id)
-            .order_by(Review.review_date.desc().nullslast())
-            .all()
         )
+        if product_id_filter is not None:
+            query = query.filter(Product.id == product_id_filter)
+        elif product_filter:
+            normalized = _normalize_whitespace(product_filter)
+            query = query.filter(Product.name.ilike(f"%{normalized}%"))
+        rows = query.order_by(Review.review_date.desc().nullslast()).all()
         data = [
             {
                 "id": r.id,
                 "source_site": r.source_site,
+                "retailer": retailer,
+                "product_id": product_id,
                 "product_name": product_name,
                 "product_url": product_url,
                 "external_review_id": r.external_review_id,
@@ -34,7 +51,7 @@ def export_brand(brand_name: str, fmt: str = "csv", output_path: str = None) -> 
                 "verified": r.verified,
                 "scraped_at": r.scraped_at.isoformat(),
             }
-            for r, product_name, product_url in rows
+            for r, product_id, product_name, product_url, retailer in rows
         ]
 
     if not output_path:

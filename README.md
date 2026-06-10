@@ -69,22 +69,36 @@ python cli.py scrape Dior
 
 # Scrape a single site
 python cli.py scrape Dior --site bazaarvoice
-python cli.py scrape Dior --site trustpilot
-python cli.py scrape Dior --site amazon
-python cli.py scrape Dior --site google
+
+# Scrape one specific product by its external ID (skips discovery)
+python cli.py scrape Dior --site bazaarvoice --product-id 5010859059
 
 # List all tracked brands with review counts
 python cli.py list-brands
 
-# Export reviews to CSV or JSON
+# List all products for a brand
+python cli.py list-products Dior
+
+# Search products by name
+python cli.py list-products Dior --search "Miss Dior"
+
+# Export all reviews for a brand to CSV or JSON
 python cli.py export Dior --format csv
 python cli.py export Dior --format json -o dior_reviews.json
+
+# Export reviews for a specific product by name (case-insensitive substring match)
+python cli.py export Dior --product "Miss Dior"
+
+# Export reviews for a specific product by its DB ID (from list-products — most reliable)
+python cli.py export Dior --product-id 5397
 
 # Remove a brand and all its data
 python cli.py remove-brand Dior
 ```
 
-The exported file includes `product_name` and `product_url` columns so you can see exactly which site each review came from.
+The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns so you can cross-reference with `list-products` and see exactly which site and retailer each review came from.
+
+Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
 
 ## Architecture
 

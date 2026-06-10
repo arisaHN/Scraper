@@ -42,10 +42,15 @@ def add_brand(name: str):
 @cli.command("scrape")
 @click.argument("brand")
 @click.option("--site", default=None, help="Scrape only this site (trustpilot, amazon, google, bazaarvoice)")
-def scrape(brand: str, site: str):
+@click.option("--product-id", default=None, help="Scrape only this product external ID (requires --site)")
+def scrape(brand: str, site: str, product_id: str):
     """On-demand scrape for a brand."""
-    from src.runner import run_all_sites, run_brand
+    from src.runner import run_all_sites, run_brand, run_single_product
     from src.scrapers import SCRAPER_REGISTRY
+
+    if product_id and not site:
+        click.echo("--product-id requires --site to be specified.", err=True)
+        return
 
     with get_session() as session:
         b = session.query(Brand).filter_by(name=brand).first()
@@ -54,7 +59,18 @@ def scrape(brand: str, site: str):
             return
         brand_id, brand_name = b.id, b.name
 
-    if site:
+    if product_id:
+        if site not in SCRAPER_REGISTRY:
+            click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
+            return
+        ScraperClass = SCRAPER_REGISTRY[site]
+        click.echo(f"Scraping product '{product_id}' from {site}...")
+        try:
+            count = run_single_product(brand_id, brand_name, site, ScraperClass, product_id)
+            click.echo(f"Done — {count} reviews saved.")
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+    elif site:
         if site not in SCRAPER_REGISTRY:
             click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
             return
@@ -132,15 +148,41 @@ def list_brands():
             click.echo(f"{b.id:>4}  {b.name:<30}  {count:>6}")
 
 
+@cli.command("list-products")
+@click.argument("brand")
+@click.option("--search", default=None, help="Filter products by name (case-insensitive)")
+def list_products(brand: str, search: str):
+    """List all products for a brand with review counts."""
+    with get_session() as session:
+        b = session.query(Brand).filter_by(name=brand).first()
+        if not b:
+            click.echo(f"Brand '{brand}' not found.", err=True)
+            return
+        query = session.query(Product).filter_by(brand_id=b.id)
+        if search:
+            query = query.filter(Product.name.ilike(f"%{search}%"))
+        products = query.order_by(Product.source_site, Product.name).all()
+        if not products:
+            click.echo("No products found.")
+            return
+        click.echo(f"{'ID':>6}  {'Site':<14}  {'Reviews':>7}  Name")
+        click.echo("-" * 80)
+        for p in products:
+            count = session.query(Review).filter_by(product_id=p.id).count()
+            click.echo(f"{p.id:>6}  {p.source_site:<14}  {count:>7}  {p.name[:50]}")
+
+
 @cli.command("export")
 @click.argument("brand")
 @click.option("--format", "fmt", type=click.Choice(["csv", "json"]), default="csv", show_default=True)
 @click.option("--output", "-o", default=None, help="Output file path")
-def export(brand: str, fmt: str, output: str):
+@click.option("--product", default=None, help="Filter by product name (case-insensitive substring match)")
+@click.option("--product-id", "product_id", default=None, type=int, help="Filter by exact product DB ID (from list-products)")
+def export(brand: str, fmt: str, output: str, product: str, product_id: int):
     """Export all reviews for a brand to CSV or JSON."""
     from src.exporter import export_brand
     try:
-        path = export_brand(brand, fmt, output)
+        path = export_brand(brand, fmt, output, product_filter=product, product_id_filter=product_id)
         click.echo(f"Exported to {path}")
     except ValueError as e:
         click.echo(str(e), err=True)
