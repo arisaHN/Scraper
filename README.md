@@ -1,22 +1,11 @@
-# Multi-Site Review Scraper
+# Bazaarvoice Review Scraper
 
-Given a brand name, this tool discovers all matching products across multiple review platforms, scrapes all customer reviews, and stores them in a unified PostgreSQL database.
-
-**Supported platforms:** Bazaarvoice (retailer sites e.g. Douglas), Trustpilot, Amazon, Google Reviews
-
-## Features
-
-- Automatic product discovery across all supported sites
-- Idempotent scraping — re-running never creates duplicate reviews
-- Per-product error isolation — one timeout does not abort the whole run
-- Export reviews to CSV or JSON with exact product URLs
-- CLI for all operations
+Given a brand name, this tool discovers all matching products across Bazaarvoice-powered retailer sites, scrapes all customer reviews, and stores them in a PostgreSQL database.
 
 ## Requirements
 
 - Python 3.11+
 - PostgreSQL
-- Chromium (for Playwright-based scrapers)
 
 ## Installation
 
@@ -28,7 +17,6 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
-playwright install chromium
 ```
 
 ## Configuration
@@ -38,40 +26,34 @@ Create a `.env` file in the project root:
 ```
 DATABASE_URL=postgresql://user@localhost:5432/scraper_db
 BV_PASSKEY_DOUGLAS=<your-bazaarvoice-passkey>
-BV_LOCALE=it_IT
-GOOGLE_PLACES_KEY=          # optional; enables Google Places API mode
+BV_LOCALE_DOUGLAS=it_IT
 SCRAPE_DELAY_MIN=0.5
 SCRAPE_DELAY_MAX=2.0
 ```
 
 - `BV_PASSKEY_DOUGLAS` — Bazaarvoice passkeys are retailer-specific. The passkey for Douglas Italy only works with the Douglas catalog.
-- `BV_LOCALE` — must match the retailer's locale (e.g. `it_IT` for Douglas Italy, `en_US` for US retailers).
-- `GOOGLE_PLACES_KEY` — if omitted, the Google scraper falls back to Playwright on Google Maps.
+- `BV_LOCALE_DOUGLAS` — must match the retailer's locale (e.g. `it_IT` for Douglas Italy).
 
 ## Database Setup
 
 ```bash
-# Create tables (first run)
-python -c "from src.database import init_db; init_db()"
-
-# Or run Alembic migrations
 alembic upgrade head
 ```
 
 ## Usage
 
 ```bash
-# Register a brand and run an initial scrape across all sites
+# Register a brand and run an initial scrape
 python cli.py add-brand Dior
 
-# Re-scrape all sites for a brand
+# Re-scrape all configured retailers for a brand
 python cli.py scrape Dior
 
-# Scrape a single site
-python cli.py scrape Dior --site bazaarvoice
+# Scrape a specific retailer
+python cli.py scrape Dior --site bazaarvoice_douglas
 
 # Scrape one specific product by its external ID (skips discovery)
-python cli.py scrape Dior --site bazaarvoice --product-id 5010859059
+python cli.py scrape Dior --site bazaarvoice_douglas --product-id 5010859059
 
 # List all tracked brands with review counts
 python cli.py list-brands
@@ -82,45 +64,46 @@ python cli.py list-products Dior
 # Search products by name
 python cli.py list-products Dior --search "Miss Dior"
 
-# Export all reviews for a brand to CSV or JSON
+# Export all reviews to CSV or JSON
 python cli.py export Dior --format csv
 python cli.py export Dior --format json -o dior_reviews.json
 
-# Export reviews for a specific product by name (case-insensitive substring match)
+# Export reviews for a specific product by name
 python cli.py export Dior --product "Miss Dior"
 
-# Export reviews for a specific product by its DB ID (from list-products — most reliable)
+# Export reviews for a specific product by its DB ID (most reliable)
 python cli.py export Dior --product-id 5397
 
 # Remove a brand and all its data
 python cli.py remove-brand Dior
 ```
 
-The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns so you can cross-reference with `list-products` and see exactly which site and retailer each review came from.
-
-Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
+The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
 
 ## Architecture
 
 ```
-cli.py → src/runner.py → scraper → src/normalizer.py → PostgreSQL
+cli.py → src/runner.py → src/scrapers/bazaarvoice.py → src/normalizer.py → PostgreSQL
 ```
 
-| Site | Method |
-|------|--------|
-| Bazaarvoice | REST API; retailer-scoped passkey; locale-aware |
-| Trustpilot | Playwright + `__NEXT_DATA__` JSON parsing |
-| Amazon | Playwright + `playwright_stealth` |
-| Google | Places API (if key set) or Playwright fallback |
-
-Database deduplication is enforced via `UNIQUE(source_site, external_review_id)` on the reviews table — all inserts use `ON CONFLICT DO NOTHING`.
+Database deduplication is enforced via `UNIQUE(source_site, external_review_id)` — re-running never creates duplicate reviews.
 
 ## Adding a New Bazaarvoice Retailer
 
-Each retailer needs its own passkey. Add `BV_PASSKEY_<RETAILER>=<key>` to `.env`, then register a new scraper entry in `src/scrapers/__init__.py`.
+No code changes needed. Add two lines to `.env`:
+
+```
+BV_PASSKEY_SEPHORA=<passkey>
+BV_LOCALE_SEPHORA=fr_FR
+```
+
+The scraper auto-registers as `bazaarvoice_sephora` on the next run.
+
+**How to find a retailer's passkey:**
+1. Open a product page on the retailer's site that shows reviews
+2. Open browser DevTools → Network tab → filter by `bazaarvoice`
+3. The passkey appears in every `api.bazaarvoice.com` request URL as `passkey=xxxxx`
 
 ## Notes
 
-- Amazon and Google scrapers use browser automation and may be affected by anti-bot measures.
-- Google Places API free tier returns a maximum of 5 reviews per place.
 - The same product sold on two different retailer sites is stored as two separate products in the database, each with their own reviews.
