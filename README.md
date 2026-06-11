@@ -20,21 +20,16 @@ cd scraper
 ```bash
 cp .env.example .env
 ```
-Then open `.env` and fill in your Bazaarvoice passkey(s). The database variables are already set correctly for Docker.
+Then open `.env` and fill in your `DATABASE_URL` (Supabase connection string) and Bazaarvoice passkey(s).
 
 **3. Build the image**
 ```bash
 docker compose build
 ```
 
-**4. Start the database**
-```bash
-docker compose up -d db
-```
-
 ## Usage
 
-Run any command with `docker compose run --rm scraper <command>`. The `--rm` flag removes the container after the command finishes; the database data persists in a Docker volume.
+Run any command with `docker compose run --rm scraper <command>`. The `--rm` flag removes the container after the command finishes.
 
 ```bash
 # Register a brand and run an initial scrape
@@ -80,14 +75,22 @@ All configuration lives in `.env`. Copy `.env.example` to get started:
 
 | Variable | Description |
 |---|---|
-| `POSTGRES_USER` | Database user (default: `scraper`) |
-| `POSTGRES_PASSWORD` | Database password |
-| `POSTGRES_DB` | Database name (default: `scraper_db`) |
-| `DATABASE_URL` | Full connection string — keep pointing at `db:5432` for Docker |
+| `DATABASE_URL` | Supabase (or any PostgreSQL) connection string |
 | `BV_PASSKEY_<RETAILER>` | Bazaarvoice passkey for a retailer (e.g. `BV_PASSKEY_DOUGLAS`) |
 | `BV_LOCALE_<RETAILER>` | Locale for that retailer (e.g. `BV_LOCALE_DOUGLAS=it_IT`) |
 | `SCRAPE_DELAY_MIN` | Min seconds between requests (default: `0.5`) |
 | `SCRAPE_DELAY_MAX` | Max seconds between requests (default: `2.0`) |
+
+## Automated Scraping (GitHub Actions)
+
+The workflow at `.github/workflows/scrape.yml` runs the scraper automatically every day at 8am UTC. It can also be triggered manually from the GitHub Actions tab.
+
+To enable it, add two secrets to your GitHub repo under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `DATABASE_URL` | Your Supabase connection string |
+| `BV_PASSKEY_DOUGLAS` | Your Bazaarvoice passkey |
 
 ## Adding a New Bazaarvoice Retailer
 
@@ -97,6 +100,8 @@ No code changes needed. Add two lines to `.env`:
 BV_PASSKEY_SEPHORA=<passkey>
 BV_LOCALE_SEPHORA=fr_FR
 ```
+
+And add the corresponding `BV_PASSKEY_SEPHORA` secret in GitHub if you want it available in the automated workflow too.
 
 The scraper auto-registers as `bazaarvoice_sephora` on the next run.
 
@@ -117,5 +122,3 @@ Database deduplication is enforced via `UNIQUE(source_site, external_review_id)`
 ## Notes
 
 - The same product sold on two different retailer sites is stored as two separate products in the database, each with their own reviews.
-- To stop and remove everything (including database data): `docker compose down -v`
-- To stop only the database without losing data: `docker compose stop db`

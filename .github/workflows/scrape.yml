@@ -1,0 +1,27 @@
+name: Scrape
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # every day at 8am UTC
+  workflow_dispatch:        # manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t scraper .
+
+      - name: Run scraper
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e BV_PASSKEY_DOUGLAS=${{ secrets.BV_PASSKEY_DOUGLAS }} \
+            -e BV_LOCALE_DOUGLAS=it_IT \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior
