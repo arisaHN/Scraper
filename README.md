@@ -4,89 +4,90 @@ Given a brand name, this tool discovers all matching products across Bazaarvoice
 
 ## Requirements
 
-- Python 3.11+
-- PostgreSQL
+- Docker Desktop
 
-## Installation
+That's it — no Python or PostgreSQL installation needed on your machine.
 
+## Setup
+
+**1. Clone the repo**
 ```bash
 git clone <repo-url>
 cd scraper
-
-python -m venv .venv
-source .venv/bin/activate
-
-pip install -r requirements.txt
 ```
 
-## Configuration
-
-Create a `.env` file in the project root:
-
-```
-DATABASE_URL=postgresql://user@localhost:5432/scraper_db
-BV_PASSKEY_DOUGLAS=<your-bazaarvoice-passkey>
-BV_LOCALE_DOUGLAS=it_IT
-SCRAPE_DELAY_MIN=0.5
-SCRAPE_DELAY_MAX=2.0
-```
-
-- `BV_PASSKEY_DOUGLAS` — Bazaarvoice passkeys are retailer-specific. The passkey for Douglas Italy only works with the Douglas catalog.
-- `BV_LOCALE_DOUGLAS` — must match the retailer's locale (e.g. `it_IT` for Douglas Italy).
-
-## Database Setup
-
+**2. Create your `.env` file**
 ```bash
-alembic upgrade head
+cp .env.example .env
+```
+Then open `.env` and fill in your Bazaarvoice passkey(s). The database variables are already set correctly for Docker.
+
+**3. Build the image**
+```bash
+docker compose build
+```
+
+**4. Start the database**
+```bash
+docker compose up -d db
 ```
 
 ## Usage
 
+Run any command with `docker compose run --rm scraper <command>`. The `--rm` flag removes the container after the command finishes; the database data persists in a Docker volume.
+
 ```bash
 # Register a brand and run an initial scrape
-python cli.py add-brand Dior
+docker compose run --rm scraper add-brand Dior
 
 # Re-scrape all configured retailers for a brand
-python cli.py scrape Dior
+docker compose run --rm scraper scrape Dior
 
 # Scrape a specific retailer
-python cli.py scrape Dior --site bazaarvoice_douglas
+docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas
 
 # Scrape one specific product by its external ID (skips discovery)
-python cli.py scrape Dior --site bazaarvoice_douglas --product-id 5010859059
+docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas --product-id 5010859059
 
 # List all tracked brands with review counts
-python cli.py list-brands
+docker compose run --rm scraper list-brands
 
 # List all products for a brand
-python cli.py list-products Dior
+docker compose run --rm scraper list-products Dior
 
 # Search products by name
-python cli.py list-products Dior --search "Miss Dior"
+docker compose run --rm scraper list-products Dior --search "Miss Dior"
 
 # Export all reviews to CSV or JSON
-python cli.py export Dior --format csv
-python cli.py export Dior --format json -o dior_reviews.json
+docker compose run --rm scraper export Dior --format csv
+docker compose run --rm scraper export Dior --format json -o dior_reviews.json
 
 # Export reviews for a specific product by name
-python cli.py export Dior --product "Miss Dior"
+docker compose run --rm scraper export Dior --product "Miss Dior"
 
 # Export reviews for a specific product by its DB ID (most reliable)
-python cli.py export Dior --product-id 5397
+docker compose run --rm scraper export Dior --product-id 5397
 
 # Remove a brand and all its data
-python cli.py remove-brand Dior
+docker compose run --rm scraper remove-brand Dior
 ```
 
 The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
 
-## Architecture
+## Configuration
 
-```
-cli.py → src/runner.py → src/scrapers/bazaarvoice.py → src/normalizer.py → PostgreSQL
-```
+All configuration lives in `.env`. Copy `.env.example` to get started:
 
-Database deduplication is enforced via `UNIQUE(source_site, external_review_id)` — re-running never creates duplicate reviews.
+| Variable | Description |
+|---|---|
+| `POSTGRES_USER` | Database user (default: `scraper`) |
+| `POSTGRES_PASSWORD` | Database password |
+| `POSTGRES_DB` | Database name (default: `scraper_db`) |
+| `DATABASE_URL` | Full connection string — keep pointing at `db:5432` for Docker |
+| `BV_PASSKEY_<RETAILER>` | Bazaarvoice passkey for a retailer (e.g. `BV_PASSKEY_DOUGLAS`) |
+| `BV_LOCALE_<RETAILER>` | Locale for that retailer (e.g. `BV_LOCALE_DOUGLAS=it_IT`) |
+| `SCRAPE_DELAY_MIN` | Min seconds between requests (default: `0.5`) |
+| `SCRAPE_DELAY_MAX` | Max seconds between requests (default: `2.0`) |
 
 ## Adding a New Bazaarvoice Retailer
 
@@ -104,6 +105,17 @@ The scraper auto-registers as `bazaarvoice_sephora` on the next run.
 2. Open browser DevTools → Network tab → filter by `bazaarvoice`
 3. The passkey appears in every `api.bazaarvoice.com` request URL as `passkey=xxxxx`
 
+## Architecture
+
+```
+cli.py → src/runner.py → src/scrapers/bazaarvoice.py → src/normalizer.py → PostgreSQL
+```
+
+Database migrations run automatically when the container starts (`alembic upgrade head` in `entrypoint.sh`).
+Database deduplication is enforced via `UNIQUE(source_site, external_review_id)` — re-running never creates duplicate reviews.
+
 ## Notes
 
 - The same product sold on two different retailer sites is stored as two separate products in the database, each with their own reviews.
+- To stop and remove everything (including database data): `docker compose down -v`
+- To stop only the database without losing data: `docker compose stop db`
