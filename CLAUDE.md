@@ -11,73 +11,56 @@ Always use the project virtualenv:
 .venv/bin/alembic      # instead of alembic
 ```
 
-Or activate it first: `source .venv/bin/activate`
-
-## Common Commands
+## Dev Commands
 
 ```bash
-# Run a scrape
-python cli.py add-brand <name>               # register brand + initial scrape
-python cli.py scrape <brand>                 # re-scrape all sites
-python cli.py scrape <brand> --site <site>   # single site (bazaarvoice|trustpilot|amazon|google)
-python cli.py list-brands                    # show brands + review counts
-python cli.py export <brand> --format csv    # export to CSV/JSON
-
-# Database
-python -c "from src.database import init_db; init_db()"   # create tables (first run)
-alembic upgrade head                                        # run migrations
-alembic revision --autogenerate -m "description"           # generate migration from model changes
-
-# Quick smoke test
+# Smoke test — verify registry loads
 python -c "from src.scrapers import SCRAPER_REGISTRY; print(list(SCRAPER_REGISTRY))"
+
+# Database migrations
+alembic upgrade head                                       # apply all pending migrations
+alembic revision --autogenerate -m "description"           # generate migration from model changes
 ```
 
 ## Architecture
 
-The system takes a brand name, discovers matching products across multiple review platforms, scrapes all reviews, and stores them in PostgreSQL with deduplication.
-
-**Data flow:** `cli.py` → `src/runner.py` → scraper → `src/normalizer.py` → PostgreSQL
+**Data flow:** `cli.py` → `src/runner.py` → `src/scrapers/bazaarvoice.py` → `src/normalizer.py` → PostgreSQL
 
 ### Key files
 
-- **`cli.py`** — click CLI entry point; calls `runner.run_brand()` / `run_all_sites()`
-- **`src/runner.py`** — orchestrates discovery + scraping for one brand/site; handles `ScrapeRun` audit rows; per-product error isolation so one timeout doesn't abort the whole run
-- **`src/scrapers/base.py`** — abstract `BaseScraper`; tenacity retry on `HTTPError`, `ReadTimeout`, `ConnectionError` (4 attempts, exponential backoff); rotating User-Agent; polite delays
-- **`src/normalizer.py`** — `NormalizedReview` dataclass + `ReviewNormalizer` with one static method per site (`from_bazaarvoice`, `from_trustpilot`, `from_amazon`, `from_google`)
-- **`src/models.py`** — four SQLAlchemy tables: `brands`, `products`, `reviews`, `scrape_runs`
-- **`src/database.py`** — `get_session()` context manager (commit on exit, rollback on exception); `init_db()`
+- **`cli.py`** — click CLI; commands: `add-brand`, `scrape`, `list-brands`, `list-products`, `export`, `remove-brand`
+- **`src/runner.py`** — orchestrates discovery + scraping; `run_brand(brand_id, brand_name, registry_key)`, `run_single_product(...)`, `run_all_sites(...)`; per-product error isolation; `ScrapeRun` audit rows
+- **`src/scrapers/__init__.py`** — auto-builds `SCRAPER_REGISTRY` by scanning `BV_PASSKEY_*` env vars; each entry is `{class, source_site, kwargs, retailer}`
+- **`src/scrapers/base.py`** — abstract `BaseScraper`; tenacity retry on `HTTPError`, `ReadTimeout`, `ConnectionError` (4 attempts, exponential backoff); rotating User-Agent; `_polite_delay()`
+- **`src/scrapers/bazaarvoice.py`** — REST API; `Stats=Reviews` filter; locale-aware; passkey + locale passed via constructor
+- **`src/normalizer.py`** — `NormalizedReview` dataclass + `ReviewNormalizer.from_bazaarvoice()`
+- **`src/models.py`** — four SQLAlchemy tables: `brands`, `products`, `reviews`, `scrape_runs`; `SiteEnum` keeps removed site values to avoid DB migration on existing data
+- **`src/database.py`** — `get_session()` context manager (commit on exit, rollback on exception)
+- **`src/exporter.py`** — `export_brand(brand_name, fmt, output_path, product_filter, product_id_filter)`
 
-### Scrapers
+### SCRAPER_REGISTRY format
 
-| Site | File | Method |
-|------|------|--------|
-| Bazaarvoice | `src/scrapers/bazaarvoice.py` | REST API; `Stats=Reviews` filter keeps only products with reviews; locale-aware (`BV_LOCALE` env var, default `en_US`) |
-| Trustpilot | `src/scrapers/trustpilot.py` | Full Playwright — both discovery and review scraping (plain requests get 403); parses `__NEXT_DATA__` JSON; pagination via `filters.pagination.totalPages` |
-| Amazon | `src/scrapers/amazon.py` | Playwright + `playwright_stealth` v2 (`Stealth().apply_stealth_async(page)`); parses `[data-hook="review"]` cards |
-| Google | `src/scrapers/google_reviews.py` | Google Places API if `GOOGLE_PLACES_KEY` set (max 5 reviews/place); Playwright fallback otherwise |
+Each entry is a dict, not a bare class:
+```python
+{
+    "class": BazaarvoiceScraper,
+    "source_site": "bazaarvoice",   # stored in DB
+    "kwargs": {"passkey": "...", "locale": "it_IT"},
+    "retailer": "douglas",          # stored in Product.retailer
+}
+```
+Runner uses `entry["source_site"]` for DB storage and `registry_key` (e.g. `"bazaarvoice_douglas"`) for logging.
 
 ### Database deduplication
 
-Reviews use `UNIQUE(source_site, external_review_id)` — all inserts use `INSERT ... ON CONFLICT DO NOTHING`, making re-runs fully idempotent. Products use `UNIQUE(source_site, external_id)`.
-
-### Configuration (`.env`)
-
-```
-DATABASE_URL=postgresql://user@localhost:5432/scraper_db
-BV_PASSKEY_DOUGLAS=<key>      # Bazaarvoice retailer passkey (retailer-specific)
-BV_LOCALE=it_IT                # locale for BV review fetching (must match retailer)
-GOOGLE_PLACES_KEY=             # optional; enables Places API mode for Google scraper
-SCRAPE_DELAY_MIN=0.5
-SCRAPE_DELAY_MAX=2.0
-```
-
-### Adding a new site
-
-1. Add a class in `src/scrapers/` extending `BaseScraper`, implementing `discover_products()` and `scrape_reviews()`
-2. Add a normalizer method in `src/normalizer.py` → `ReviewNormalizer`
-3. Register in `src/scrapers/__init__.py` → `SCRAPER_REGISTRY`
-4. Add the new value to `SiteEnum` in `src/models.py` and generate an Alembic migration
+Reviews: `UNIQUE(source_site, external_review_id)` — inserts use `ON CONFLICT DO NOTHING`.
+Products: `UNIQUE(source_site, external_id)`.
 
 ### Adding a new Bazaarvoice retailer
 
-Each retailer needs its own passkey scoped to that retailer's catalog. Add `BV_PASSKEY_<RETAILER>=<key>` to `.env` and instantiate a separate `BazaarvoiceScraper` entry in `SCRAPER_REGISTRY` with the correct passkey and locale.
+Add to `.env` only — no code changes:
+```
+BV_PASSKEY_<RETAILER>=<key>
+BV_LOCALE_<RETAILER>=<locale>
+```
+Auto-registers as `bazaarvoice_<retailer>` in `SCRAPER_REGISTRY`.

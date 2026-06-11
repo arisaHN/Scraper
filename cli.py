@@ -30,18 +30,18 @@ def add_brand(name: str):
     from src.runner import run_brand
     from src.scrapers import SCRAPER_REGISTRY
 
-    for site, ScraperClass in SCRAPER_REGISTRY.items():
-        click.echo(f"  [{site}] scraping...")
+    for registry_key in SCRAPER_REGISTRY:
+        click.echo(f"  [{registry_key}] scraping...")
         try:
-            count = run_brand(brand_id, name, site, ScraperClass)
-            click.echo(f"  [{site}] done — {count} reviews saved.")
+            count = run_brand(brand_id, name, registry_key)
+            click.echo(f"  [{registry_key}] done — {count} reviews saved.")
         except Exception as e:
-            click.echo(f"  [{site}] failed: {e}", err=True)
+            click.echo(f"  [{registry_key}] failed: {e}", err=True)
 
 
 @cli.command("scrape")
 @click.argument("brand")
-@click.option("--site", default=None, help="Scrape only this site (trustpilot, amazon, google, bazaarvoice)")
+@click.option("--site", default=None, help="Scrape only this site (e.g. bazaarvoice_douglas, trustpilot, amazon, google)")
 @click.option("--product-id", default=None, help="Scrape only this product external ID (requires --site)")
 def scrape(brand: str, site: str, product_id: str):
     """On-demand scrape for a brand."""
@@ -59,25 +59,21 @@ def scrape(brand: str, site: str, product_id: str):
             return
         brand_id, brand_name = b.id, b.name
 
+    if site and site not in SCRAPER_REGISTRY:
+        click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
+        return
+
     if product_id:
-        if site not in SCRAPER_REGISTRY:
-            click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
-            return
-        ScraperClass = SCRAPER_REGISTRY[site]
         click.echo(f"Scraping product '{product_id}' from {site}...")
         try:
-            count = run_single_product(brand_id, brand_name, site, ScraperClass, product_id)
+            count = run_single_product(brand_id, brand_name, site, product_id)
             click.echo(f"Done — {count} reviews saved.")
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
     elif site:
-        if site not in SCRAPER_REGISTRY:
-            click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
-            return
-        ScraperClass = SCRAPER_REGISTRY[site]
         click.echo(f"Scraping {site} for '{brand_name}'...")
         try:
-            count = run_brand(brand_id, brand_name, site, ScraperClass)
+            count = run_brand(brand_id, brand_name, site)
             click.echo(f"Done — {count} reviews saved.")
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
@@ -165,11 +161,12 @@ def list_products(brand: str, search: str):
         if not products:
             click.echo("No products found.")
             return
-        click.echo(f"{'ID':>6}  {'Site':<14}  {'Reviews':>7}  Name")
-        click.echo("-" * 80)
+        click.echo(f"{'ID':>6}  {'Site':<14}  {'Retailer':<12}  {'Reviews':>7}  Name")
+        click.echo("-" * 90)
         for p in products:
             count = session.query(Review).filter_by(product_id=p.id).count()
-            click.echo(f"{p.id:>6}  {p.source_site:<14}  {count:>7}  {p.name[:50]}")
+            retailer = p.retailer or ""
+            click.echo(f"{p.id:>6}  {p.source_site:<14}  {retailer:<12}  {count:>7}  {p.name[:45]}")
 
 
 @cli.command("export")
