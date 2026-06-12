@@ -15,6 +15,13 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
     scraper = entry["class"](**entry["kwargs"])
 
     with get_session() as session:
+        last_run = (
+            session.query(ScrapeRun)
+            .filter_by(brand_id=brand_id, site=source_site, status=RunStatus.success)
+            .order_by(ScrapeRun.finished_at.desc())
+            .first()
+        )
+        since = last_run.finished_at if last_run else None
         run = ScrapeRun(brand_id=brand_id, site=source_site, status=RunStatus.running)
         session.add(run)
         session.flush()
@@ -29,7 +36,7 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
             try:
                 prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
                 prod_reviews = 0
-                for review in scraper.scrape_reviews(prod_data):
+                for review in scraper.scrape_reviews(prod_data, since=since):
                     _upsert_review(prod_id, review)
                     count += 1
                     prod_reviews += 1

@@ -1,4 +1,5 @@
-from typing import Iterator
+from datetime import datetime
+from typing import Iterator, Optional
 
 from ..normalizer import NormalizedReview, ReviewNormalizer
 from .base import BaseScraper
@@ -52,7 +53,7 @@ class BazaarvoiceScraper(BaseScraper):
             self._polite_delay()
         return results
 
-    def scrape_reviews(self, product: dict) -> Iterator[NormalizedReview]:
+    def scrape_reviews(self, product: dict, since: Optional[datetime] = None) -> Iterator[NormalizedReview]:
         offset = 0
         total = None
         while True:
@@ -73,8 +74,17 @@ class BazaarvoiceScraper(BaseScraper):
             results = data.get("Results", [])
             if not results:
                 break
+            stop = False
             for raw in results:
-                yield ReviewNormalizer.from_bazaarvoice(raw)
+                review = ReviewNormalizer.from_bazaarvoice(raw)
+                if since and review.review_date:
+                    review_dt = review.review_date.replace(tzinfo=None) if review.review_date.tzinfo else review.review_date
+                    if review_dt < since:
+                        stop = True
+                        break
+                yield review
+            if stop:
+                break
             offset += 100
             if offset >= total:
                 break

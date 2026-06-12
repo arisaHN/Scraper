@@ -1,7 +1,8 @@
 import random
 import time
 from abc import ABC, abstractmethod
-from typing import Iterator
+from datetime import datetime
+from typing import Iterator, Optional
 
 import requests
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -52,5 +53,5 @@ class BaseScraper(ABC):
         """Return list of dicts with keys: name, source_url, external_id."""
 
     @abstractmethod
-    def scrape_reviews(self, product: dict) -> Iterator[NormalizedReview]:
-        """Yield NormalizedReview objects for a given product."""
+    def scrape_reviews(self, product: dict, since: Optional[datetime] = None) -> Iterator[NormalizedReview]:
+        """Yield NormalizedReview objects for a given product. If since is set, stop at reviews older than that datetime."""
