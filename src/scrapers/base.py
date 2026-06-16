@@ -35,6 +35,17 @@ class BaseScraper(ABC):
     def _polite_delay(self):
         time.sleep(random.uniform(settings.SCRAPE_DELAY_MIN, settings.SCRAPE_DELAY_MAX))
 
+    def close(self):
+        """Release any held resources (browser process, sockets, ...). No-op by default."""
+
+    @staticmethod
+    def _past_cutoff(review_date: Optional[datetime], since: Optional[datetime]) -> bool:
+        """True if review_date is strictly older than since (tz-naive comparison)."""
+        if not since or not review_date:
+            return False
+        review_dt = review_date.replace(tzinfo=None) if review_date.tzinfo else review_date
+        return review_dt < since
+
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=2, min=3, max=60),

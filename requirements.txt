@@ -1,6 +1,9 @@
 # HTTP
 requests==2.32.5
-camoufox[geoip]
+camoufox[geoip]==0.4.11
+# Pinned explicitly: the Dockerfile's coreBundle.js sed patches target this exact
+# version's bundled driver file and must be re-verified if it's bumped.
+playwright==1.60.0
 
 # Database
 SQLAlchemy==2.0.36
