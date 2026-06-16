@@ -71,8 +71,9 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
         with get_session() as session:
             existing = session.query(Product).filter_by(source_site=source_site, external_id=product_id).first()
             product_name = existing.name if existing else product_id
+            product_url = existing.source_url if existing else ""
 
-        prod_data = {"external_id": product_id, "name": product_name, "source_url": ""}
+        prod_data = {"external_id": product_id, "name": product_name, "source_url": product_url}
         prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
 
         for review in scraper.scrape_reviews(prod_data):

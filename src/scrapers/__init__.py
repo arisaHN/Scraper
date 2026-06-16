@@ -18,3 +18,12 @@ for _key, _passkey in os.environ.items():
             "kwargs": {"passkey": _passkey, "locale": _locale},
             "retailer": _retailer,
         }
+
+if os.environ.get("SEPHORA_ENABLED", "").lower() in ("1", "true"):
+    from .sephora_html import SephoraHTMLScraper
+    SCRAPER_REGISTRY["sephora"] = {
+        "class": SephoraHTMLScraper,
+        "source_site": "sephora",
+        "kwargs": {},
+        "retailer": "sephora",
+    }

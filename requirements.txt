@@ -1,5 +1,6 @@
 # HTTP
 requests==2.32.5
+camoufox[geoip]
 
 # Database
 SQLAlchemy==2.0.36
