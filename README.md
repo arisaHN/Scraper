@@ -1,12 +1,15 @@
-# Bazaarvoice Review Scraper
+# Review Scraper
 
-Given a brand name, this tool discovers all matching products across Bazaarvoice-powered retailer sites, scrapes all customer reviews, and stores them in a PostgreSQL database.
+Scrapes customer reviews for a given brand from multiple retailer sites and stores them in PostgreSQL. Supports two scraper types:
+
+- **Bazaarvoice** — REST API scraper (Douglas and any other BV-powered retailer)
+- **Sephora** — Playwright/Camoufox HTML scraper for sephora.it (bypasses bot protection)
 
 ## Requirements
 
 - Docker Desktop
 
-That's it — no Python or PostgreSQL installation needed on your machine.
+No Python or PostgreSQL installation needed on your machine.
 
 ## Setup
 
@@ -20,7 +23,7 @@ cd scraper
 ```bash
 cp .env.example .env
 ```
-Then open `.env` and fill in your `DATABASE_URL` (Supabase connection string) and Bazaarvoice passkey(s).
+Open `.env` and fill in your values (see Configuration section below).
 
 **3. Build the image**
 ```bash
@@ -29,20 +32,21 @@ docker compose build
 
 ## Usage
 
-Run any command with `docker compose run --rm scraper <command>`. The `--rm` flag removes the container after the command finishes.
+Run any command with `docker compose run --rm scraper <command>`.
 
 ```bash
-# Register a brand and run an initial scrape
+# Register a brand
 docker compose run --rm scraper add-brand Dior
 
-# Re-scrape all configured retailers for a brand
+# Scrape all configured retailers for a brand
 docker compose run --rm scraper scrape Dior
 
-# Scrape a specific retailer
-docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas
+# Scrape a specific retailer only
+docker compose run --rm scraper scrape Dior --site bazaarvoice
+docker compose run --rm scraper scrape Dior --site sephora
 
 # Scrape one specific product by its external ID (skips discovery)
-docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas --product-id 5010859059
+docker compose run --rm scraper scrape Dior --site bazaarvoice --product-id 5010859059
 
 # List all tracked brands with review counts
 docker compose run --rm scraper list-brands
@@ -60,7 +64,7 @@ docker compose run --rm scraper export Dior --format json -o dior_reviews.json
 # Export reviews for a specific product by name
 docker compose run --rm scraper export Dior --product "Miss Dior"
 
-# Export reviews for a specific product by its DB ID (most reliable)
+# Export reviews for a specific product by its DB ID
 docker compose run --rm scraper export Dior --product-id 5397
 
 # Remove a brand and all its data
@@ -78,47 +82,50 @@ All configuration lives in `.env`. Copy `.env.example` to get started:
 | `DATABASE_URL` | Supabase (or any PostgreSQL) connection string |
 | `BV_PASSKEY_<RETAILER>` | Bazaarvoice passkey for a retailer (e.g. `BV_PASSKEY_DOUGLAS`) |
 | `BV_LOCALE_<RETAILER>` | Locale for that retailer (e.g. `BV_LOCALE_DOUGLAS=it_IT`) |
+| `SEPHORA_ENABLED` | Set to `1` to enable the Sephora scraper |
 | `SCRAPE_DELAY_MIN` | Min seconds between requests (default: `0.5`) |
 | `SCRAPE_DELAY_MAX` | Max seconds between requests (default: `2.0`) |
 
 ## Automated Scraping (GitHub Actions)
 
-The workflow at `.github/workflows/scrape.yml` runs the scraper automatically every day at 8am UTC. It can also be triggered manually from the GitHub Actions tab.
+The workflow at `.github/workflows/scrape.yml` runs every day at 8am UTC and can also be triggered manually from the GitHub Actions tab.
 
-To enable it, add two secrets to your GitHub repo under **Settings → Secrets and variables → Actions**:
+**Scraping is incremental** — on each run, only reviews newer than the last successful scrape are fetched. Re-running never creates duplicates.
+
+To enable, add these secrets to your GitHub repo under **Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
 |---|---|
 | `DATABASE_URL` | Your Supabase connection string |
-| `BV_PASSKEY_DOUGLAS` | Your Bazaarvoice passkey |
+| `BV_PASSKEY_DOUGLAS` | Your Bazaarvoice passkey for Douglas |
 
 ## Adding a New Bazaarvoice Retailer
 
-No code changes needed. Add two lines to `.env`:
+No code changes needed — just add two lines to `.env`:
 
 ```
-BV_PASSKEY_SEPHORA=<passkey>
-BV_LOCALE_SEPHORA=fr_FR
+BV_PASSKEY_NEWRETAILER=<passkey>
+BV_LOCALE_NEWRETAILER=it_IT
 ```
 
-And add the corresponding `BV_PASSKEY_SEPHORA` secret in GitHub if you want it available in the automated workflow too.
-
-The scraper auto-registers as `bazaarvoice_sephora` on the next run.
+The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 
 **How to find a retailer's passkey:**
-1. Open a product page on the retailer's site that shows reviews
+1. Open a product page on the retailer's site that shows BV-powered reviews
 2. Open browser DevTools → Network tab → filter by `bazaarvoice`
 3. The passkey appears in every `api.bazaarvoice.com` request URL as `passkey=xxxxx`
 
 ## Architecture
 
 ```
-cli.py → src/runner.py → src/scrapers/bazaarvoice.py → src/normalizer.py → PostgreSQL
+cli.py → src/runner.py → scraper class → src/normalizer.py → PostgreSQL
 ```
 
+| Scraper | How it works |
+|---|---|
+| `bazaarvoice.py` | Calls the Bazaarvoice REST API directly |
+| `sephora_html.py` | Loads pages in a headless Firefox (Camoufox) to bypass bot protection, extracts reviews from the DOM |
+
 Database migrations run automatically when the container starts (`alembic upgrade head` in `entrypoint.sh`).
-Database deduplication is enforced via `UNIQUE(source_site, external_review_id)` — re-running never creates duplicate reviews.
 
-## Notes
-
-- The same product sold on two different retailer sites is stored as two separate products in the database, each with their own reviews.
+The same product sold on two different retailer sites is stored as two separate `products` rows, each with their own reviews. Reviews are deduplicated via `UNIQUE(source_site, external_review_id)`.

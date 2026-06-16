@@ -1,0 +1,14 @@
+{
+  "skills": {
+    "engineering:debug": {
+      "description": "Systematic debugging skill — identifies root causes of errors, analyzes stack traces, inspects runtime behavior in the context of this Python/PostgreSQL scraper project (virtual env at .venv/, SQLAlchemy models, tenacity retry logic), and proposes targeted fixes.",
+      "namespace": "engineering",
+      "name": "debug"
+    },
+    "engineering:code-review": {
+      "description": "Thorough code review skill — checks correctness, adherence to project conventions in CLAUDE.md (virtual env usage, SQLAlchemy patterns, deduplication via ON CONFLICT, SCRAPER_REGISTRY format), security, performance, and maintainability for this Python scraper codebase.",
+      "namespace": "engineering",
+      "name": "code-review"
+    }
+  }
+}

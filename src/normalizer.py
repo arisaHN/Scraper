@@ -76,6 +76,19 @@ class ReviewNormalizer:
         )
 
     @staticmethod
+    def from_sephora(raw: dict) -> NormalizedReview:
+        return NormalizedReview(
+            external_review_id=raw["id"],
+            source_site="sephora",
+            author=raw.get("author"),
+            rating=float(raw["rating"]) if raw.get("rating") is not None else None,
+            title=raw.get("title"),
+            text=raw.get("text"),
+            review_date=raw.get("parsed_date") or _parse_dt(raw.get("date")),
+            verified=raw.get("verified", False),
+        )
+
+    @staticmethod
     def from_google(raw: dict) -> NormalizedReview:
         ts = raw.get("time")
         review_date = datetime.utcfromtimestamp(ts) if ts and str(ts).isdigit() else _parse_dt(str(ts) if ts else None)
