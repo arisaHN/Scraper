@@ -26,17 +26,22 @@ _IT_MONTHS = {
 # JS that extracts all fields from a single review <li>
 _EXTRACT_JS = """li => {
     const stars = [...li.querySelectorAll('span[style*="--fillRatio"]')];
-    const rating = Math.round(stars.reduce((sum, s) => {
+    const rawRating = Math.round(stars.reduce((sum, s) => {
         const m = (s.getAttribute('style') || '').match(/--fillRatio:\\s*([\\d.]+)/);
         return sum + (m ? parseFloat(m[1]) : 0);
     }, 0));
+    const rating = Math.max(0, Math.min(5, rawRating));
 
     const topRow = li.querySelector(':scope > div:first-child');
     const dateEl = topRow ? topRow.querySelector(':scope > p') : null;
 
-    const boldPs = [...li.querySelectorAll('p')].filter(p => p.className.includes('font-bold'));
-    const author = boldPs[0] ? boldPs[0].textContent.trim() : null;
-    const title  = boldPs[1] ? boldPs[1].textContent.trim() : null;
+    // Only non-empty bold paragraphs are real author/title text, not icon-only badges
+    const boldPs = [...li.querySelectorAll('p')]
+        .filter(p => p.className.includes('font-bold'))
+        .map(p => p.textContent.trim())
+        .filter(t => t.length > 0);
+    const author = boldPs[0] || null;
+    const title  = boldPs[1] || null;
 
     const textEl = li.querySelector('p[class*="overflow-wrap"]');
     let text = null;
@@ -46,7 +51,10 @@ _EXTRACT_JS = """li => {
         text = clone.textContent.trim() || null;
     }
 
-    const verified = !!li.querySelector('svg rect[fill="#005B00"]');
+    // Primary signal is the verified-badge icon color; fall back to the Italian/English
+    // "verified" text in case Sephora restyles the badge without changing its copy.
+    const verified = !!li.querySelector('svg rect[fill="#005B00"]')
+        || /verificat|verified/i.test(li.textContent || '');
 
     return {
         author,
@@ -83,11 +91,14 @@ class SephoraHTMLScraper(BaseScraper):
         self._camoufox = Camoufox(headless=True, geoip=True)
         self._browser = self._camoufox.__enter__()
 
-    def __del__(self):
+    def close(self):
         try:
             self._camoufox.__exit__(None, None, None)
         except Exception:
             pass
+
+    def __del__(self):
+        self.close()
 
     def _new_page(self):
         page = self._browser.new_page()
@@ -96,10 +107,7 @@ class SephoraHTMLScraper(BaseScraper):
 
     def _refresh_browser(self):
         """Close and reopen Camoufox to get a fresh browser fingerprint."""
-        try:
-            self._camoufox.__exit__(None, None, None)
-        except Exception:
-            pass
+        self.close()
         self._camoufox = Camoufox(headless=True, geoip=True)
         self._browser = self._camoufox.__enter__()
 
@@ -187,6 +195,11 @@ class SephoraHTMLScraper(BaseScraper):
         return results
 
     def scrape_reviews(self, product: dict, since: Optional[datetime] = None) -> Iterator[NormalizedReview]:
+        if not product.get("source_url"):
+            raise ValueError(
+                f"No source_url for product {product.get('external_id')!r} — run a full "
+                f"scrape (without --product-id) at least once so it can be discovered first."
+            )
         self._refresh_browser()
         page = self._new_page()
         try:
@@ -197,19 +210,20 @@ class SephoraHTMLScraper(BaseScraper):
             except PlaywrightTimeout:
                 print(f"    [sephora] no reviews found on {product['source_url']}")
                 return
+            processed = 0
             while True:
                 stop = False
-                for li in page.query_selector_all(_SEL_REVIEW_LIST):
+                items = page.query_selector_all(_SEL_REVIEW_LIST)
+                for li in items[processed:]:  # only the newly loaded ones since last pass
                     raw = _extract_review_fields(li)
                     if not raw:
                         continue
                     review = ReviewNormalizer.from_sephora(raw)
-                    if since and review.review_date:
-                        review_dt = review.review_date.replace(tzinfo=None) if review.review_date.tzinfo else review.review_date
-                        if review_dt < since:
-                            stop = True
-                            break
+                    if self._past_cutoff(review.review_date, since):
+                        stop = True
+                        break
                     yield review
+                processed = len(items)
                 if stop:
                     break
                 load_more = page.query_selector(_SEL_LOAD_MORE)
@@ -283,7 +297,15 @@ def _extract_review_fields(el) -> Optional[dict]:
     try:
         data = el.evaluate(_EXTRACT_JS)
         date_str = data.get("date")
-        id_src = f"sephora|{data.get('author')}|{date_str}|{(data.get('text') or '')[:100]}"
+        # Full text + rating included (not just a text prefix) to minimize collisions
+        # between distinct anonymous reviews posted on the same day.
+        id_src = "|".join([
+            "sephora",
+            str(data.get("author")),
+            str(date_str),
+            str(data.get("rating")),
+            data.get("text") or "",
+        ])
         data["id"] = hashlib.sha256(id_src.encode()).hexdigest()[:32]
         data["parsed_date"] = _parse_it_date(date_str)
         return data

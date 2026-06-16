@@ -77,11 +77,9 @@ class BazaarvoiceScraper(BaseScraper):
             stop = False
             for raw in results:
                 review = ReviewNormalizer.from_bazaarvoice(raw)
-                if since and review.review_date:
-                    review_dt = review.review_date.replace(tzinfo=None) if review.review_date.tzinfo else review.review_date
-                    if review_dt < since:
-                        stop = True
-                        break
+                if self._past_cutoff(review.review_date, since):
+                    stop = True
+                    break
                 yield review
             if stop:
                 break

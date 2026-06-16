@@ -45,7 +45,8 @@ docker compose run --rm scraper scrape Dior
 docker compose run --rm scraper scrape Dior --site bazaarvoice
 docker compose run --rm scraper scrape Dior --site sephora
 
-# Scrape one specific product by its external ID (skips discovery)
+# Scrape one specific product by its external ID (skips discovery — the product
+# must have already been found by a prior full scrape, so its details are known)
 docker compose run --rm scraper scrape Dior --site bazaarvoice --product-id 5010859059
 
 # List all tracked brands with review counts
@@ -82,7 +83,7 @@ All configuration lives in `.env`. Copy `.env.example` to get started:
 | `DATABASE_URL` | Supabase (or any PostgreSQL) connection string |
 | `BV_PASSKEY_<RETAILER>` | Bazaarvoice passkey for a retailer (e.g. `BV_PASSKEY_DOUGLAS`) |
 | `BV_LOCALE_<RETAILER>` | Locale for that retailer (e.g. `BV_LOCALE_DOUGLAS=it_IT`) |
-| `SEPHORA_ENABLED` | Set to `1` to enable the Sephora scraper |
+| `SEPHORA_ENABLED` | Set to `1` (or `true`/`yes`/`on`) to enable the Sephora scraper |
 | `SCRAPE_DELAY_MIN` | Min seconds between requests (default: `0.5`) |
 | `SCRAPE_DELAY_MAX` | Max seconds between requests (default: `2.0`) |
 
@@ -128,4 +129,4 @@ cli.py → src/runner.py → scraper class → src/normalizer.py → PostgreSQL
 
 Database migrations run automatically when the container starts (`alembic upgrade head` in `entrypoint.sh`).
 
-The same product sold on two different retailer sites is stored as two separate `products` rows, each with their own reviews. Reviews are deduplicated via `UNIQUE(source_site, external_review_id)`.
+The same product sold on two different retailer sites is stored as two separate `products` rows, each with their own reviews. Products are deduplicated via `UNIQUE(source_site, external_id, retailer)` and reviews via `UNIQUE(source_site, external_review_id)`.

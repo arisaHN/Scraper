@@ -22,7 +22,6 @@ jobs:
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
             -e BV_PASSKEY_DOUGLAS=${{ secrets.BV_PASSKEY_DOUGLAS }} \
             -e BV_LOCALE_DOUGLAS=it_IT \
-            -e SEPHORA_ENABLED=1 \
             -e SCRAPE_DELAY_MIN=0.5 \
             -e SCRAPE_DELAY_MAX=2.0 \
-            scraper scrape Dior
+            scraper scrape Dior --site bazaarvoice_douglas

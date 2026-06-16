@@ -35,13 +35,11 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
         for i, prod_data in enumerate(products, 1):
             try:
                 prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
-                prod_reviews = 0
-                for review in scraper.scrape_reviews(prod_data, since=since):
-                    _upsert_review(prod_id, review)
-                    count += 1
-                    prod_reviews += 1
-                if prod_reviews:
-                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {prod_reviews} reviews", flush=True)
+                reviews = list(scraper.scrape_reviews(prod_data, since=since))
+                _upsert_reviews(prod_id, reviews)
+                count += len(reviews)
+                if reviews:
+                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {len(reviews)} reviews", flush=True)
             except Exception as exc:
                 print(f"  [{registry_key}] ({i}/{len(products)}) SKIP {prod_data.get('external_id')} — {exc}", flush=True)
 
@@ -49,6 +47,8 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
     except Exception as exc:
         _finish_run(run_id, RunStatus.failed, count, str(exc)[:2000])
         raise
+    finally:
+        scraper.close()
 
     return count
 
@@ -61,6 +61,13 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
     scraper = entry["class"](**entry["kwargs"])
 
     with get_session() as session:
+        last_run = (
+            session.query(ScrapeRun)
+            .filter_by(brand_id=brand_id, site=source_site, status=RunStatus.success)
+            .order_by(ScrapeRun.finished_at.desc())
+            .first()
+        )
+        since = last_run.finished_at if last_run else None
         run = ScrapeRun(brand_id=brand_id, site=source_site, status=RunStatus.running)
         session.add(run)
         session.flush()
@@ -71,20 +78,22 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
         with get_session() as session:
             existing = session.query(Product).filter_by(source_site=source_site, external_id=product_id).first()
             product_name = existing.name if existing else product_id
-            product_url = existing.source_url if existing else ""
+            product_url = existing.source_url if existing else None
 
         prod_data = {"external_id": product_id, "name": product_name, "source_url": product_url}
         prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
 
-        for review in scraper.scrape_reviews(prod_data):
-            _upsert_review(prod_id, review)
-            count += 1
+        reviews = list(scraper.scrape_reviews(prod_data, since=since))
+        _upsert_reviews(prod_id, reviews)
+        count = len(reviews)
 
         print(f"  [{registry_key}] {product_name[:50]} — {count} reviews", flush=True)
         _finish_run(run_id, RunStatus.success, count)
     except Exception as exc:
         _finish_run(run_id, RunStatus.failed, count, str(exc)[:2000])
         raise
+    finally:
+        scraper.close()
 
     return count
 
@@ -130,26 +139,34 @@ def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = N
             return row[0]
         return (
             session.query(Product.id)
-            .filter_by(source_site=site, external_id=prod_data.get("external_id"))
+            .filter_by(source_site=site, external_id=prod_data.get("external_id"), retailer=retailer)
             .scalar()
         )
 
 
-def _upsert_review(prod_id: int, review) -> None:
+def _upsert_reviews(prod_id: int, reviews: list) -> None:
+    """Upsert all of one product's reviews in a single transaction."""
+    if not reviews:
+        return
     with get_session() as session:
         stmt = (
             pg_insert(Review)
             .values(
-                product_id=prod_id,
-                source_site=review.source_site,
-                external_review_id=review.external_review_id,
-                author=review.author,
-                rating=review.rating,
-                title=review.title,
-                text=review.text,
-                review_date=review.review_date,
-                helpful_count=review.helpful_count,
-                verified=review.verified,
+                [
+                    {
+                        "product_id": prod_id,
+                        "source_site": review.source_site,
+                        "external_review_id": review.external_review_id,
+                        "author": review.author,
+                        "rating": review.rating,
+                        "title": review.title,
+                        "text": review.text,
+                        "review_date": review.review_date,
+                        "helpful_count": review.helpful_count,
+                        "verified": review.verified,
+                    }
+                    for review in reviews
+                ]
             )
             .on_conflict_do_nothing(constraint="uq_review_site_external")
         )

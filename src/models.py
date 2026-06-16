@@ -49,7 +49,7 @@ class Brand(Base):
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
-        UniqueConstraint("source_site", "external_id", name="uq_product_site_external"),
+        UniqueConstraint("source_site", "external_id", "retailer", name="uq_product_site_external"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

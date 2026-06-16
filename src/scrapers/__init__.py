@@ -19,7 +19,7 @@ for _key, _passkey in os.environ.items():
             "retailer": _retailer,
         }
 
-if os.environ.get("SEPHORA_ENABLED", "").lower() in ("1", "true"):
+if os.environ.get("SEPHORA_ENABLED", "").lower() in ("1", "true", "yes", "on"):
     from .sephora_html import SephoraHTMLScraper
     SCRAPER_REGISTRY["sephora"] = {
         "class": SephoraHTMLScraper,
