@@ -1,4 +1,4 @@
-name: Scrape Douglas
+name: Scrape Daily
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  scrape:
+  scrape-douglas:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -24,3 +24,21 @@ jobs:
             -e SCRAPE_DELAY_MIN=0.5 \
             -e SCRAPE_DELAY_MAX=2.0 \
             scraper scrape Dior --site bazaarvoice_douglas
+
+  scrape-notino:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t scraper .
+
+      - name: Run scraper
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e NOTINO_ENABLED=1 \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior --site notino

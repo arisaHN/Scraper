@@ -119,6 +119,22 @@ class CamoufoxBrowserMixin:
         page.on("pageerror", lambda _: None)
         return page
 
+    def _dismiss_consent(self, page):
+        """Click any visible cookie/consent button. Shared by all browser-based scrapers."""
+        for selector in [
+            "button:has-text('Accetta')", "button:has-text('Accetto')",
+            "button:has-text('Accept')", "button[id*='accept']",
+            "[data-testid*='accept']",
+        ]:
+            try:
+                btn = page.query_selector(selector)
+                if btn and btn.is_visible():
+                    btn.click()
+                    page.wait_for_load_state("networkidle", timeout=5_000)
+                    break
+            except Exception:
+                pass
+
     def close(self):
         self._close_browser()
 

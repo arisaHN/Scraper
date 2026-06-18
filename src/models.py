@@ -27,6 +27,7 @@ class SiteEnum(str, enum.Enum):
     bazaarvoice = "bazaarvoice"
     sephora = "sephora"
     notino = "notino"
+    marionnaud = "marionnaud"
 
 
 class RunStatus(str, enum.Enum):

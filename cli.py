@@ -1,4 +1,5 @@
 import click
+from sqlalchemy import func
 
 from src.config import settings
 from src.database import get_session, init_db
@@ -41,7 +42,7 @@ def add_brand(name: str):
 
 @cli.command("scrape")
 @click.argument("brand")
-@click.option("--site", default=None, help="Scrape only this site (e.g. bazaarvoice_douglas, trustpilot, amazon, google)")
+@click.option("--site", default=None, help="Scrape only this site key (e.g. bazaarvoice_douglas, notino, sephora). Omit to scrape all enabled sites.")
 @click.option("--product-id", default=None, help="Scrape only this product external ID (requires --site)")
 def scrape(brand: str, site: str, product_id: str):
     """On-demand scrape for a brand."""
@@ -60,8 +61,7 @@ def scrape(brand: str, site: str, product_id: str):
         brand_id, brand_name = b.id, b.name
 
     if site and site not in SCRAPER_REGISTRY:
-        click.echo(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}", err=True)
-        return
+        raise click.ClickException(f"Unknown site '{site}'. Choose from: {', '.join(SCRAPER_REGISTRY)}")
 
     if product_id:
         click.echo(f"Scraping product '{product_id}' from {site}...")
@@ -162,18 +162,21 @@ def remove_retailer(retailer: str, yes: bool):
             .all()
         )
 
-    if shared:
+    # brand+site combos that still have OTHER retailers — skip deleting their ScrapeRun rows
+    # so their incremental-scrape cursor is preserved.
+    shared_combos = {(b, s) for b, s in shared}
+    if shared_combos:
         click.echo(
-            "Warning: these brand/site combos have OTHER retailers sharing scrape_runs "
-            "bookkeeping — their incremental-scrape cursor will also reset:"
+            "Note: scrape_runs for the following brand/site combos will NOT be deleted "
+            "because other retailers still have products there:"
         )
-        for brand_id, site in shared:
-            click.echo(f"  brand_id={brand_id} site={site}")
+        for b, s in sorted(shared_combos):
+            click.echo(f"  brand_id={b} site={s}")
 
     if not yes:
         click.confirm(
-            f"Delete retailer '{retailer}': {len(products)} products, {review_count} reviews, "
-            f"and scrape_runs for {len(brand_ids)} brand(s)? This cannot be undone.",
+            f"Delete retailer '{retailer}': {len(products)} products, {review_count} reviews? "
+            "This cannot be undone.",
             abort=True,
         )
 
@@ -183,9 +186,11 @@ def remove_retailer(retailer: str, yes: bool):
         ).delete(synchronize_session=False)
         session.query(Review).filter(Review.product_id.in_(product_ids)).delete(synchronize_session=False)
         session.query(Product).filter_by(retailer=retailer).delete(synchronize_session=False)
-        session.query(ScrapeRun).filter(
-            ScrapeRun.brand_id.in_(brand_ids), ScrapeRun.site.in_(sites)
-        ).delete(synchronize_session=False)
+        # Only reset ScrapeRun history for brand+site combos where no other retailer remains
+        for bid in brand_ids:
+            for s in sites:
+                if (bid, s) not in shared_combos:
+                    session.query(ScrapeRun).filter_by(brand_id=bid, site=s).delete(synchronize_session=False)
 
     click.echo(f"Removed retailer '{retailer}': {len(products)} products, {review_count} reviews.")
 
@@ -227,12 +232,17 @@ def list_products(brand: str, search: str):
         if not products:
             click.echo("No products found.")
             return
+        counts = dict(
+            session.query(Review.product_id, func.count(Review.id))
+            .filter(Review.product_id.in_([p.id for p in products]))
+            .group_by(Review.product_id)
+            .all()
+        )
         click.echo(f"{'ID':>6}  {'Site':<14}  {'Retailer':<12}  {'Reviews':>7}  Name")
         click.echo("-" * 90)
         for p in products:
-            count = session.query(Review).filter_by(product_id=p.id).count()
             retailer = p.retailer or ""
-            click.echo(f"{p.id:>6}  {p.source_site:<14}  {retailer:<12}  {count:>7}  {p.name[:45]}")
+            click.echo(f"{p.id:>6}  {p.source_site:<14}  {retailer:<12}  {counts.get(p.id, 0):>7}  {p.name[:45]}")
 
 
 @cli.command("export")

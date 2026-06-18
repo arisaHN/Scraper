@@ -193,19 +193,7 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
             page.wait_for_function("document.querySelectorAll('[data-testid]').length > 0", timeout=15_000)
         except Exception:
             pass  # proceed even if no data-testid appear (some pages may not have them)
-        for selector in [
-            "button:has-text('Accetta')", "button:has-text('Accetto')",
-            "button:has-text('Accept')", "button[id*='accept']",
-            "[data-testid*='accept']",
-        ]:
-            try:
-                btn = page.query_selector(selector)
-                if btn and btn.is_visible():
-                    btn.click()
-                    page.wait_for_load_state("networkidle", timeout=5_000)
-                    break
-            except Exception:
-                pass
+        self._dismiss_consent(page)
 
     # ── product discovery (unchanged: still needs a real browser to render links) ──
 

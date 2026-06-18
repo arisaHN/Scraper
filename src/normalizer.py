@@ -67,6 +67,25 @@ class ReviewNormalizer:
         )
 
     @staticmethod
+    def from_marionnaud(raw: dict) -> NormalizedReview:
+        """Parse a review object from marionnaud.it's PowerReviews display API."""
+        details = raw.get("details") or {}
+        metrics = raw.get("metrics") or {}
+        badges = raw.get("badges") or {}
+        created_date = details.get("created_date")
+        return NormalizedReview(
+            external_review_id=str(raw["review_id"]),
+            source_site="marionnaud",
+            author=details.get("nickname") or "Anonymous",
+            rating=float(metrics["rating"]) if metrics.get("rating") is not None else None,
+            title=details.get("headline"),
+            text=details.get("comments"),
+            review_date=datetime.utcfromtimestamp(created_date / 1000) if created_date else None,
+            helpful_count=metrics.get("helpful_votes", 0) or 0,
+            verified=bool(badges.get("is_verified_buyer")),
+        )
+
+    @staticmethod
     def from_notino(raw: dict) -> NormalizedReview:
         """Parse a review object from notino.it's getReviews GraphQL response."""
         return NormalizedReview(
