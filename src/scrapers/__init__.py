@@ -36,3 +36,12 @@ if os.environ.get("NOTINO_ENABLED", "").lower() in ("1", "true", "yes", "on"):
         "kwargs": {},
         "retailer": "notino",
     }
+
+if os.environ.get("MARIONNAUD_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .marionnaud import MarionnaudScraper
+    SCRAPER_REGISTRY["marionnaud"] = {
+        "class": MarionnaudScraper,
+        "source_site": "marionnaud",
+        "kwargs": {},
+        "retailer": "marionnaud",
+    }

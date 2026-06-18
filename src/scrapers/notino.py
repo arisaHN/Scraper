@@ -86,7 +86,7 @@ class NotinoScraper(CamoufoxBrowserMixin, BaseScraper):
         self._dismiss_consent(page)
 
     def _parse_products_from_ssr(self, html: str) -> list[dict]:
-        """Extract product objects from the __NEXT_DATA__ JSON blob on the brand page.
+        """Extract product objects from inline JSON script blobs on Notino pages.
 
         Parses the structured JSON directly so field positions don't matter, unlike a
         fixed-width regex context window that silently drops products in large blobs.
@@ -96,7 +96,7 @@ class NotinoScraper(CamoufoxBrowserMixin, BaseScraper):
         products: dict[str, dict] = {}
 
         # Try structured parse of __NEXT_DATA__ first
-        m = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([^<]+)</script>', html)
+        m = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([\s\S]+?)</script>', html)
         if m:
             try:
                 data = _json.loads(m.group(1))
@@ -106,45 +106,99 @@ class NotinoScraper(CamoufoxBrowserMixin, BaseScraper):
             except Exception:
                 pass
 
-        # Fallback: scan all inline JSON script blobs
-        for script_m in re.finditer(r'<script[^>]*type=["\']application/json["\'][^>]*>([^<]{100,})</script>', html):
+        # Scan all application/json script blobs ([\s\S]+? handles < chars in JSON strings)
+        for script_m in re.finditer(r'<script[^>]*type=["\']application/json["\'][^>]*>([\s\S]+?)</script>', html):
+            content = script_m.group(1).strip()
+            if len(content) < 100:
+                continue
             try:
-                data = _json.loads(script_m.group(1))
+                data = _json.loads(content)
                 _collect_notino_products(data, products)
             except Exception:
                 pass
 
         return list(products.values())
 
+    def _brand_id_from_page(self, html: str) -> Optional[str]:
+        """Extract the numeric brand ID from the pageUrl template in the listing JSON.
+
+        The navigation-fragment-state JSON contains a listing block with:
+          "pageUrl": "/dior/?f={pageNumber}-{sortOption}-150"
+        where 150 is the brand ID used in Notino's filter parameter format.
+        """
+        import json as _json
+        m = re.search(r'"pageUrl"\s*:\s*"([^"]+)"', html)
+        if not m:
+            return None
+        # pageUrl looks like "/{slug}/?f={pageNumber}-{sortOption}-150"
+        parts = m.group(1).split("-")
+        if len(parts) >= 3:
+            brand_id = parts[-1].rstrip('"')
+            if brand_id.isdigit():
+                return brand_id
+        return None
+
     def discover_products(self, brand_name: str) -> list[dict]:
+        """Discover all products for a brand by paginating the brand listing page.
+
+        Notino exposes full brand catalogs via ?f={page}-{sort}-{brandId} pagination
+        (24 products per page). The brand ID and total page count are read from the
+        navigation-fragment-state JSON embedded in the first brand page load.
+        """
+        import json as _json
+
         brand_slug = brand_name.lower().replace(" ", "-")
         brand_url = f"https://www.notino.it/{brand_slug}/"
+        all_products: dict[str, dict] = {}
 
-        page = self._new_page()
+        # Load page 1 to get brand ID and total page count
+        pg = self._new_page()
         try:
-            self._wait_for_page(page, brand_url)
-            # Scroll to trigger any lazy-loaded product grids
-            for _ in range(15):
-                page.evaluate("window.scrollBy(0, window.innerHeight * 3)")
-                time.sleep(0.4)
-            try:
-                page.wait_for_load_state("networkidle", timeout=8_000)
-            except Exception:
-                pass
-            html = page.content()
+            self._wait_for_page(pg, brand_url)
+            html = pg.content()
         finally:
-            page.close()
+            pg.close()
 
-        raw = self._parse_products_from_ssr(html)
-        results = []
-        for item in raw:
-            url_path = item.get("url") or ""
-            results.append({
+        for item in self._parse_products_from_ssr(html):
+            all_products.setdefault(item["code"], item)
+
+        brand_id = self._brand_id_from_page(html)
+        if not brand_id:
+            return list({
                 "name": item["name"],
-                "source_url": f"https://www.notino.it{url_path}" if url_path else None,
+                "source_url": f"https://www.notino.it{item.get('url', '')}",
                 "external_id": item["code"],
-            })
-        return results
+            } for item in all_products.values())
+
+        # Read total page count from the listing JSON
+        total_pages = 1
+        m = re.search(r'"pageUrl"\s*:\s*"[^"]+"', html)
+        np_m = re.search(r'"numberOfPages"\s*:\s*(\d+)', html)
+        if np_m:
+            total_pages = int(np_m.group(1))
+
+        # Paginate remaining pages using ?f={page}-1-{brandId}
+        for page_num in range(2, total_pages + 1):
+            paginated_url = f"https://www.notino.it/{brand_slug}/?f={page_num}-1-{brand_id}"
+            pg = self._new_page()
+            try:
+                self._wait_for_page(pg, paginated_url)
+                html = pg.content()
+            finally:
+                pg.close()
+
+            for item in self._parse_products_from_ssr(html):
+                all_products.setdefault(item["code"], item)
+            self._polite_delay()
+
+        return [
+            {
+                "name": item["name"],
+                "source_url": f"https://www.notino.it{item.get('url', '')}",
+                "external_id": item["code"],
+            }
+            for item in all_products.values()
+        ]
 
     # ── review scraping ─────────────────────────────────────────────────────────
 

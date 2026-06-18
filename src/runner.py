@@ -55,7 +55,12 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
         for i, prod_data in enumerate(products, 1):
             try:
                 prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
-                n_reviews = _scrape_product(scraper, prod_id, prod_data, since, supports_backfill)
+                # New products have no prior scrape history — fetch their full review
+                # history regardless of the site-wide since cutoff.
+                with get_session() as session:
+                    has_reviews = session.query(Review).filter_by(product_id=prod_id).first() is not None
+                product_since = since if has_reviews else None
+                n_reviews = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
                 count += n_reviews
                 consecutive_failures = 0
                 if n_reviews:
