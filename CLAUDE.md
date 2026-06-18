@@ -33,6 +33,8 @@ docker compose run --rm --entrypoint python -e SEPHORA_ENABLED=1 scraper -c \
 
 - `tests/test_normalizer.py` — pure unit tests for `ReviewNormalizer.from_bazaarvoice()` against fixture dicts; no network access, runs without any credentials.
 - `tests/test_douglas_scraper.py` — live integration tests against the real Bazaarvoice API for a known Douglas product; skipped automatically (`pytest.mark.skipif`) unless `BV_PASSKEY_DOUGLAS` is set. Includes a self-deriving `since`-cutoff test that computes its own expected count from a fresh full fetch each run rather than a hardcoded date/count, so it doesn't rot as new reviews accumulate on the live product.
+- `tests/test_sephora_normalizer.py` — pure unit tests for Sephora's parsing logic (`ReviewNormalizer.from_sephora()`, `_safe_from_sephora()`, `_router_state_tree()`, `_parse_rsc()`) against fixture/synthetic RSC-stream data; no network or browser, deliberately avoids hitting the live sephora.it site given the Akamai request-volume blocking risk documented below.
+- `tests/test_backfill_cursor.py` — exercises the `SephoraBackfillCursor` upsert logic in `runner.py::_scrape_product()` using a `FakeSephoraScraper` test double (no browser/network) against a real Postgres connection, so the actual `ON CONFLICT` SQL is verified; skipped automatically unless `DATABASE_URL` is set. Creates and tears down a throwaway brand/product per test.
 
 ## Architecture
 

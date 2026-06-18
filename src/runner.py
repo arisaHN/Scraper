@@ -114,7 +114,7 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
     count = 0
     try:
         with get_session() as session:
-            existing = session.query(Product).filter_by(source_site=source_site, external_id=product_id).first()
+            existing = session.query(Product).filter_by(source_site=source_site, external_id=product_id, retailer=retailer).first()
             product_name = existing.name if existing else product_id
             product_url = existing.source_url if existing else None
 
