@@ -18,6 +18,13 @@ PRODUCT = {
     "source_url": "https://www.marionnaud.it/wella/ultimate-repair/miracle-hair-rescue/p/BP_502700",
 }
 
+# https://www.marionnaud.it/dior/sauvage/elixir/p/BP_143440
+DIOR_SAUVAGE_ELIXIR = {
+    "external_id": "BP_143440",
+    "name": "Elixir (Dior Sauvage, Marionnaud)",
+    "source_url": "https://www.marionnaud.it/dior/sauvage/elixir/p/BP_143440",
+}
+
 
 @pytest.mark.skipif(not MARIONNAUD_ENABLED, reason="MARIONNAUD_ENABLED not set")
 class TestMarionnaudReviewScraping:
@@ -44,6 +51,21 @@ class TestMarionnaudReviewScraping:
             r.external_review_id for r in expected
         }
 
+    def test_total_review_count_dior_sauvage_elixir(self):
+        """
+        Dior Sauvage Elixir is known to have exactly 92 reviews on marionnaud.it
+        (verified manually against the site at the time this test was written).
+        Catches pagination regressions on a product with several full pages of
+        reviews, unlike a product with just a handful.
+        """
+        from src.scrapers.marionnaud import MarionnaudScraper
+
+        scraper = MarionnaudScraper()
+        reviews = list(scraper.scrape_reviews(DIOR_SAUVAGE_ELIXIR, since=None))
+        external_ids = [r.external_review_id for r in reviews]
+        assert len(external_ids) == len(set(external_ids)), "scrape_reviews returned duplicate reviews"
+        assert len(reviews) == 92
+
     def test_discover_products(self):
         """Wella's brand catalog page on Marionnaud should yield its full product list."""
         from src.scrapers.marionnaud import MarionnaudScraper
@@ -57,3 +79,23 @@ class TestMarionnaudReviewScraping:
         assert len(products) >= 40
         assert all(p["external_id"].startswith("BP_") for p in products)
         assert any(p["external_id"] == PRODUCT["external_id"] for p in products)
+
+    def test_discover_products_dior_count(self):
+        """
+        Dior's catalog on marionnaud.it is known to list exactly 254 products
+        (verified manually against the site at the time this test was written).
+        Catches pagination regressions (e.g. an off-by-one in totalPages handling,
+        or Hybris silently capping pageSize) that a smaller brand's catalog might
+        not surface.
+        """
+        from src.scrapers.marionnaud import MarionnaudScraper
+
+        scraper = MarionnaudScraper()
+        try:
+            products = scraper.discover_products("Dior")
+        finally:
+            scraper.close()
+
+        external_ids = [p["external_id"] for p in products]
+        assert len(external_ids) == len(set(external_ids)), "discover_products returned duplicate products"
+        assert len(products) == 254
