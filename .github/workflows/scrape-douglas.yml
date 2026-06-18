@@ -1,14 +1,13 @@
-name: Scrape
+name: Scrape Douglas
 
 on:
   schedule:
     - cron: "0 8 * * *"   # every day at 8am UTC
-  workflow_dispatch:        # manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -24,7 +24,15 @@ alembic revision --autogenerate -m "description"           # generate migration 
 # Inspect a Sephora page (verify selectors)
 docker compose run --rm --entrypoint python -e SEPHORA_ENABLED=1 scraper -c \
   "from src.scrapers.sephora_html import SephoraHTMLScraper; s = SephoraHTMLScraper(); s.inspect('<url>')"
+
+# Run tests
+.venv/bin/python -m pytest tests/ -v
 ```
+
+## Testing
+
+- `tests/test_normalizer.py` — pure unit tests for `ReviewNormalizer.from_bazaarvoice()` against fixture dicts; no network access, runs without any credentials.
+- `tests/test_douglas_scraper.py` — live integration tests against the real Bazaarvoice API for a known Douglas product; skipped automatically (`pytest.mark.skipif`) unless `BV_PASSKEY_DOUGLAS` is set. Includes a self-deriving `since`-cutoff test that computes its own expected count from a fresh full fetch each run rather than a hardcoded date/count, so it doesn't rot as new reviews accumulate on the live product.
 
 ## Architecture
 
@@ -32,14 +40,15 @@ docker compose run --rm --entrypoint python -e SEPHORA_ENABLED=1 scraper -c \
 
 ### Key files
 
-- **`cli.py`** — click CLI; commands: `add-brand`, `scrape`, `list-brands`, `list-products`, `export`, `remove-brand`
+- **`cli.py`** — click CLI; commands: `add-brand`, `scrape`, `list-brands`, `list-products`, `export`, `remove-brand`, `remove-retailer`
 - **`src/runner.py`** — orchestrates discovery + scraping; `run_brand(brand_id, brand_name, registry_key)`, `run_single_product(...)`, `run_all_sites(...)`; per-product error isolation; `ScrapeRun` audit rows; passes `since=last_successful_run.finished_at` for incremental scraping (including `run_single_product`); batches a product's reviews into one `_upsert_reviews()` transaction instead of one insert per review; calls `scraper.close()` in a `finally` block
-- **`src/scrapers/__init__.py`** — auto-builds `SCRAPER_REGISTRY` by scanning `BV_PASSKEY_*` env vars; registers `SephoraHTMLScraper` when `SEPHORA_ENABLED` is `1`/`true`/`yes`/`on`
-- **`src/scrapers/base.py`** — abstract `BaseScraper`; tenacity retry on `HTTPError`, `ReadTimeout`, `ConnectionError` (4 attempts, exponential backoff); rotating User-Agent; `_polite_delay()`; `close()` (no-op default, overridden by scrapers holding a live resource); `_past_cutoff(review_date, since)` shared by both scrapers for incremental-scraping comparisons
-- **`src/scrapers/bazaarvoice.py`** — REST API scraper; `Stats=Reviews` filter; locale-aware; early-stop pagination when `review_date < since`
+- **`src/scrapers/__init__.py`** — auto-builds `SCRAPER_REGISTRY` by scanning `BV_PASSKEY_*` env vars; registers `SephoraHTMLScraper` when `SEPHORA_ENABLED` is `1`/`true`/`yes`/`on`; registers `NotinoScraper` when `NOTINO_ENABLED` is `1`/`true`/`yes`/`on`
+- **`src/scrapers/base.py`** — abstract `BaseScraper`; tenacity retry on `HTTPError`, `ReadTimeout`, `ConnectionError` (4 attempts, exponential backoff); rotating User-Agent; `_polite_delay()`; `close()` (no-op default, overridden by scrapers holding a live resource); `_past_cutoff(review_date, since)` shared by all scrapers for incremental-scraping comparisons — strips tz-info from *both* `review_date` and `since` before comparing, since `since` isn't always naive (e.g. a tz-aware datetime passed directly in tests would otherwise raise `TypeError: can't compare offset-naive and offset-aware datetimes`); `CamoufoxBrowserMixin` — shared Camoufox lifecycle (`_open_browser`/`_close_browser`/`_refresh_browser`/`_new_page`, plus `close()`/`__del__`) mixed into `SephoraHTMLScraper` and `NotinoScraper`, the two browser-driven scrapers
+- **`src/scrapers/bazaarvoice.py`** — REST API scraper; `Stats=Reviews` filter; locale-aware; early-stop pagination when `review_date < since`. Multiple `Filter` conditions must be sent as *repeated* `Filter` query params (Bazaarvoice has no separate `Filter_<Field>` key) — `requests` only does this from a list of tuples, not a dict, since a dict can't hold two same-named keys. `include_ratings_only`/`include_syndicated` (both default `False`) *omit* the corresponding `Filter` entirely when `True`, rather than flipping it to `true` — filtering `IsSyndicated:true` would return only the syndicated subset, not the union of native + syndicated. Syndicated reviews are ones Bazaarvoice copies onto a retailer's listing from the manufacturer's own site (`SourceClient`/`IsSyndicated`); retailers' own storefronts typically don't display them, so they're excluded by default to match what's visible on the retailer's site
 - **`src/scrapers/sephora_html.py`** — Playwright/Camoufox HTML scraper for sephora.it; see section below
-- **`src/normalizer.py`** — `NormalizedReview` dataclass + `ReviewNormalizer.from_bazaarvoice()`, `.from_sephora()`
-- **`src/models.py`** — four SQLAlchemy tables: `brands`, `products`, `reviews`, `scrape_runs`; `SiteEnum` includes `bazaarvoice` and `sephora`; `Product` unique constraint is `(source_site, external_id, retailer)` — `retailer` is part of the key so two Bazaarvoice retailers can't collide on the same `external_id`
+- **`src/scrapers/notino.py`** — `NotinoScraper` for notino.it: Camoufox renders the brand page to extract products from SSR-embedded JSON (`masterProductCode`/`name`/`url`), then reviews are fetched via a plain `requests`-based Apollo Persisted Query POST to `/api/product/` (not Cloudflare-gated, unlike the HTML pages) using the `getReviews` operation; `_REVIEWS_HASH` (overridable via `NOTINO_REVIEWS_HASH`) is the persisted-query hash, recapture from DevTools if Notino redeploys; `supports_backfill = False` — descending `since`-based pagination only, no cursor needed
+- **`src/normalizer.py`** — `NormalizedReview` dataclass + `ReviewNormalizer.from_bazaarvoice()`, `.from_sephora()`, `.from_notino()`
+- **`src/models.py`** — five SQLAlchemy tables: `brands`, `products`, `reviews`, `scrape_runs`, `sephora_backfill_cursors`; `SiteEnum` includes `bazaarvoice`, `sephora`, and `notino`; `Product` unique constraint is `(source_site, external_id, retailer)` — `retailer` is part of the key so two Bazaarvoice retailers can't collide on the same `external_id`
 - **`src/database.py`** — `get_session()` context manager (commit on exit, rollback on exception)
 - **`src/exporter.py`** — `export_brand(brand_name, fmt, output_path, product_filter, product_id_filter)`
 
@@ -67,6 +76,39 @@ Before each brand scrape (and before a `--product-id` single-product scrape), `r
 
 `run_single_product` requires the product to have been discovered by a prior full `scrape` (so its `source_url` is known); scrapers that need a real URL to navigate (e.g. `SephoraHTMLScraper`) raise a clear error if it's missing instead of failing with an opaque browser error.
 
+### Backfill cursor (Sephora only)
+
+Live-tested against sephora.it: scraping one product's full review history in one continuous
+run (~305 requests over ~10 minutes for a 6,700-review product) reliably trips Akamai's
+request-volume-based blocking — and the block applies to the IP broadly (confirmed: blocked
+even for plain page loads to a *different* product immediately after, from the same IP that
+still browses fine in a real browser). Refreshing the browser/cookies between products does
+not help; this is server-side IP-level risk scoring, not a client-side fingerprint issue.
+
+To stay under that threshold, scrapers can opt into a persisted, capped backfill mechanism:
+- `BaseScraper.supports_backfill` (default `False`) — set `True` on scrapers whose
+  `scrape_reviews()` honors `backfill_offset`/`max_backfill_pages`. Only `SephoraHTMLScraper`
+  sets this; `BazaarvoiceScraper` ignores the params (its REST API has no per-request
+  bot-detection cost, so it just does a full `since`-based pagination every run).
+- `sephora_backfill_cursors` table (`product_id` unique FK, `offset`, `completed`) persists
+  how far the **ascending**-sort (oldest-first) pass has reached per product. Ascending order
+  keeps the offset stable across runs — new reviews append at the *end* of an ascending list,
+  so they never shift earlier offsets the way they would in descending order.
+- `runner.py`'s `_scrape_product()` helper reads the cursor before calling `scrape_reviews()`,
+  passes `max_backfill_pages=SEPHORA_BACKFILL_PAGES_PER_RUN` (env var, default 5 → ~110
+  reviews/run, well under the ~305 that tripped blocking in testing), then reads
+  `scraper.backfill_offset`/`scraper.backfill_completed` (set by the scraper as a side effect,
+  since a generator can't also return a value) and upserts the cursor.
+- `SephoraHTMLScraper.scrape_reviews()` runs up to two passes per call:
+  1. **Watermark** (descending, stops at `since`) — only runs when `since is not None`. On a
+     brand-new product (no prior successful run, `since=None`) this pass is skipped entirely,
+     since there's no cutoff to bound it and it would otherwise walk the *entire* history before
+     the backfill cap even applies.
+  2. **Backfill** (ascending, capped at `max_backfill_pages`) — runs whenever the cursor isn't
+     `completed`, continuing from the persisted offset. Once it reaches the end of the review
+     list (`reviewCount` or an empty page), it marks `completed=True` and the watermark pass
+     alone keeps the product up to date in future runs.
+
 ### Adding a new Bazaarvoice retailer
 
 Add to `.env` only — no code changes:
@@ -78,26 +120,56 @@ Auto-registers as `bazaarvoice_<retailer>` in `SCRAPER_REGISTRY`.
 
 ### SephoraHTMLScraper
 
-Uses Camoufox (anti-bot Firefox) to bypass Akamai bot protection on sephora.it.
+Browser-driven scraper for sephora.it: Camoufox (anti-bot Firefox) renders the product page,
+then the review data is fetched by running `fetch()` *inside that page* against a Next.js
+Server Action endpoint — not via a separate Python HTTP client.
 
-**Product discovery flow:**
+**Why fetch() runs inside the page, not via `requests`:** an early version exported the
+browser's cookies to a plain `requests.post()` call. Akamai's edge WAF rejected it outright
+(generic "Access Denied" page) because the request didn't carry the headers a real browser
+fetch produces — `sec-fetch-*`, `sec-ch-ua*`, and especially `next-router-state-tree` (Next.js's
+own route-fingerprint header), several of which JS can't even set manually (the browser sets
+them itself based on real context). Cookies alone aren't sufficient; the whole request shape is
+checked. Issuing the POST via `page.evaluate()` while the tab is open sidesteps this entirely —
+the browser produces a request indistinguishable from a real user's, including TLS fingerprint.
+
+**Product discovery flow** (still fully browser-based — needs rendered links):
 1. Loads `https://www.sephora.it/{brand_lower}/{brand_upper}-HubPage.html` to find all `?scgid=C*` category tab URLs
 2. Visits each category tab at `https://www.sephora.it/marche/dalla-a-alla-z/{brand_lower}-{brand_lower}/?scgid=CXX`
 3. Extracts all `<a href>` links matching `-(P\d+)\.html` pattern, deduplicates by product ID
 
 **Review scraping flow:**
-- Loads product page (React/Next.js frontend, separate from the Demandware catalog pages)
-- Review items are `<li>` elements inside `#product-detail-reviews`
-- No `data-testid` on individual review fields — extraction uses JavaScript `evaluate()` on each `<li>`
-- Rating extracted from `--fillRatio` CSS variable on star `<span>` elements, summed and clamped to `[0, 5]`
-- Author/title taken from non-empty bold `<p>` elements only (icon-only badges with no text are filtered out before positional `[0]`/`[1]` assignment)
-- "Verified" badge detected via a hardcoded SVG fill color, with a text-match fallback (`/verificat|verified/i`) in case the badge color changes
-- "Load more" pagination via `[data-testid='load-more-button']`; each pass only processes the `<li>` elements appended since the last pass (tracked via an index), so reviews already yielded are never re-extracted/re-yielded
-- Italian dates (`"11 giu 2026"`) translated to English before parsing
-- `external_review_id` is `sha256(author|date|rating|full_text)` — full review text (not a truncated prefix) is hashed to minimize collisions between distinct anonymous reviews
+- `scrape_reviews()` opens the product page once (`_wait_and_consent`), then repeatedly calls
+  `page.evaluate(_FETCH_JS, ...)` on that same page to POST to the product page's own URL with
+  a `next-action` header — this tells Next.js to execute the `getReviews` server function
+  instead of rendering the page. Payload is a positional JSON array:
+  `[productId, offset, limit, ratingFilter, sortOrder]`
+  (e.g. `["P2266017", 0, 22, [], "SubmissionTime:desc"]`); paginated 22 reviews at a time.
+- `_router_state_tree(slug)` builds the required `next-router-state-tree` header value —
+  a JSON route descriptor Next.js needs to resolve which server action to run — by templating
+  in the product's URL slug and the fixed `it-IT` locale segment, then `urllib.parse.quote`-ing
+  the compact JSON (mirrors what Next.js's own client runtime sends).
+- Response is a Next.js RSC stream (`Content-Type: text/x-component`), not JSON — lines look
+  like `0:{...}` / `1:{...}`; `_parse_rsc()` finds the line whose JSON has a `data.reviews` key
+  and returns that `data` dict (`reviewCount` + `reviews` array).
+- `NEXT_ACTION_ID` (module constant, overridable via `SEPHORA_NEXT_ACTION_ID` env var) is a
+  hash of the server function — stable until Sephora redeploys. If requests start coming back
+  as HTML instead of an RSC stream, this ID has likely changed and needs recapturing from
+  DevTools.
+- `ReviewNormalizer.from_sephora()` parses the review JSON directly (no DOM scraping): strips
+  the RSC `"$D"` date-type prefix from `createdAt`, treats the literal string `"$undefined"` as
+  `None`, and uses `purchaserType == "BUYER"` as the verified-purchase signal.
+  `external_review_id` is the site's own numeric `id` field — no hashing needed.
+- If a fetch returns non-200 or `_parse_rsc()` can't find the expected payload, the page is
+  reloaded once (refreshing Akamai cookies) and the same offset is retried; a second failure
+  raises rather than retrying indefinitely.
 
 **Browser lifecycle:**
-`close()` explicitly tears down the Camoufox/Firefox process; `runner.py` calls it in a `finally` block after each `run_brand`/`run_single_product`. `__del__` just calls `close()` as a GC-time safety net — don't rely on `__del__` alone for cleanup.
+One browser + one page is held open for the whole `scrape_reviews()` call (discovery, on the
+other hand, opens/closes a page per category). `close()` explicitly tears down the Camoufox/
+Firefox process; `runner.py` calls it in a `finally` block after each `run_brand`/
+`run_single_product`. `__del__` just calls `close()` as a GC-time safety net — don't rely on
+`__del__` alone for cleanup.
 
 **Dockerfile patches for Playwright Firefox:**
 The `coreBundle.js` driver crashes when bot-detection JS throws errors without location info. Three sed patches in the Dockerfile add optional chaining + fallback defaults to `pageError.location` properties. A post-sed `grep` check fails the build loudly if the patch didn't apply (e.g. after a Playwright version bump changes the bundled file). `playwright` is pinned explicitly in `requirements.txt` to the version the patch was verified against — if you bump it, rebuild and confirm the build still succeeds (it will fail fast if the patch no-ops) and re-verify the path/version pair, since playwright's driver bundle layout can change between versions.

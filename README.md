@@ -2,7 +2,7 @@
 
 Scrapes customer reviews for a given brand from multiple retailer sites and stores them in PostgreSQL. Supports two scraper types:
 
-- **Bazaarvoice** — REST API scraper (Douglas and any other BV-powered retailer)
+- **Bazaarvoice** — REST API scraper (Douglas and any other BV-powered retailer). Excludes reviews syndicated from the manufacturer's own site by default, to match what the retailer's storefront actually displays.
 - **Sephora** — Playwright/Camoufox HTML scraper for sephora.it (bypasses bot protection)
 
 ## Requirements
@@ -115,6 +115,14 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 1. Open a product page on the retailer's site that shows BV-powered reviews
 2. Open browser DevTools → Network tab → filter by `bazaarvoice`
 3. The passkey appears in every `api.bazaarvoice.com` request URL as `passkey=xxxxx`
+
+## Testing
+
+```bash
+.venv/bin/python -m pytest tests/ -v
+```
+
+`tests/test_normalizer.py` runs with no setup. `tests/test_douglas_scraper.py` hits the live Bazaarvoice API and requires `BV_PASSKEY_DOUGLAS` to be set (skipped automatically otherwise).
 
 ## Architecture
 

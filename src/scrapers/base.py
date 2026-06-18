@@ -19,6 +19,11 @@ _USER_AGENTS = [
 
 class BaseScraper(ABC):
     site_name: str = ""
+    # Set True by scrapers whose scrape_reviews() honors backfill_offset/max_backfill_pages
+    # to gradually paginate through deep history across capped, resumable runs (currently
+    # only SephoraHTMLScraper — needed because each request risks tripping Akamai's
+    # request-volume-based blocking; see SephoraHTMLScraper for details).
+    supports_backfill: bool = False
 
     def __init__(self):
         self.session = requests.Session()
@@ -44,7 +49,8 @@ class BaseScraper(ABC):
         if not since or not review_date:
             return False
         review_dt = review_date.replace(tzinfo=None) if review_date.tzinfo else review_date
-        return review_dt < since
+        since_dt = since.replace(tzinfo=None) if since.tzinfo else since
+        return review_dt < since_dt
 
     @retry(
         stop=stop_after_attempt(4),
@@ -64,5 +70,57 @@ class BaseScraper(ABC):
         """Return list of dicts with keys: name, source_url, external_id."""
 
     @abstractmethod
-    def scrape_reviews(self, product: dict, since: Optional[datetime] = None) -> Iterator[NormalizedReview]:
-        """Yield NormalizedReview objects for a given product. If since is set, stop at reviews older than that datetime."""
+    def scrape_reviews(
+        self,
+        product: dict,
+        since: Optional[datetime] = None,
+        backfill_offset: Optional[int] = None,
+        max_backfill_pages: Optional[int] = None,
+    ) -> Iterator[NormalizedReview]:
+        """Yield NormalizedReview objects for a given product. If since is set, stop at
+        reviews older than that datetime. backfill_offset/max_backfill_pages are only
+        meaningful when supports_backfill is True; other scrapers can ignore them."""
+
+
+class CamoufoxBrowserMixin:
+    """Shared Camoufox (anti-bot Firefox) browser lifecycle for scrapers that need a real
+    browser — currently SephoraHTMLScraper and NotinoScraper. Mixed in alongside
+    BaseScraper rather than folded into it directly since BazaarvoiceScraper (plain REST)
+    has no use for a browser at all."""
+
+    def __init__(self):
+        super().__init__()
+        self._camoufox = None
+        self._browser = None
+
+    def _open_browser(self):
+        if self._camoufox is None:
+            from camoufox.sync_api import Camoufox
+            self._camoufox = Camoufox(headless=True, geoip=True)
+            self._browser = self._camoufox.__enter__()
+
+    def _close_browser(self):
+        if self._camoufox is not None:
+            try:
+                self._camoufox.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._camoufox = None
+            self._browser = None
+
+    def _refresh_browser(self):
+        """Close and reopen Camoufox to get a fresh browser fingerprint."""
+        self._close_browser()
+        self._open_browser()
+
+    def _new_page(self):
+        self._open_browser()
+        page = self._browser.new_page()
+        page.on("pageerror", lambda _: None)
+        return page
+
+    def close(self):
+        self._close_browser()
+
+    def __del__(self):
+        self.close()
