@@ -27,3 +27,12 @@ if os.environ.get("SEPHORA_ENABLED", "").lower() in ("1", "true", "yes", "on"):
         "kwargs": {},
         "retailer": "sephora",
     }
+
+if os.environ.get("NOTINO_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .notino import NotinoScraper
+    SCRAPER_REGISTRY["notino"] = {
+        "class": NotinoScraper,
+        "source_site": "notino",
+        "kwargs": {},
+        "retailer": "notino",
+    }

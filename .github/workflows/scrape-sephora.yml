@@ -1,0 +1,28 @@
+name: Scrape Sephora
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"  # 6x/day: 0:00, 4:00, 8:00, 12:00, 16:00, 20:00 UTC
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t scraper .
+
+      - name: Run scraper
+        timeout-minutes: 90
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e SEPHORA_ENABLED=1 \
+            -e SEPHORA_BACKFILL_PAGES_PER_RUN=1 \
+            -e SKIP_RECOVERY_SLEEP=20 \
+            -e SCRAPE_DELAY_MIN=1.0 \
+            -e SCRAPE_DELAY_MAX=3.0 \
+            scraper scrape Dior --site sephora

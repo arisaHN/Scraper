@@ -108,7 +108,7 @@ def remove_brand(name: str, yes: bool):
             abort=True,
         )
 
-    from src.models import ScrapeRun
+    from src.models import ScrapeRun, SephoraBackfillCursor
 
     with get_session() as session:
         brand = session.query(Brand).filter_by(name=name).first()
@@ -116,12 +116,78 @@ def remove_brand(name: str, yes: bool):
         product_ids = [p.id for p in products]
 
         if product_ids:
+            session.query(SephoraBackfillCursor).filter(
+                SephoraBackfillCursor.product_id.in_(product_ids)
+            ).delete(synchronize_session=False)
             session.query(Review).filter(Review.product_id.in_(product_ids)).delete(synchronize_session=False)
         session.query(Product).filter_by(brand_id=brand.id).delete(synchronize_session=False)
         session.query(ScrapeRun).filter_by(brand_id=brand.id).delete(synchronize_session=False)
         session.delete(brand)
 
     click.echo(f"Removed brand '{name}' and {review_count} reviews.")
+
+
+@cli.command("remove-retailer")
+@click.argument("retailer")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+def remove_retailer(retailer: str, yes: bool):
+    """Remove all products, reviews, and scrape-run history for a retailer (across all brands)."""
+    from src.models import ScrapeRun, SephoraBackfillCursor
+
+    with get_session() as session:
+        products = session.query(Product).filter_by(retailer=retailer).all()
+        if not products:
+            click.echo(f"No products found for retailer '{retailer}'.", err=True)
+            return
+
+        product_ids = [p.id for p in products]
+        brand_ids = sorted({p.brand_id for p in products})
+        sites = sorted({p.source_site for p in products})
+
+        review_count = (
+            session.query(Review).filter(Review.product_id.in_(product_ids)).count()
+        )
+
+        # Other retailers on the same brand/site share ScrapeRun bookkeeping (site isn't
+        # retailer-specific) — warn if deleting ScrapeRun rows here would also reset their
+        # incremental-scrape cursor.
+        shared = (
+            session.query(Product.brand_id, Product.source_site)
+            .filter(
+                Product.source_site.in_(sites),
+                Product.retailer != retailer,
+                Product.brand_id.in_(brand_ids),
+            )
+            .distinct()
+            .all()
+        )
+
+    if shared:
+        click.echo(
+            "Warning: these brand/site combos have OTHER retailers sharing scrape_runs "
+            "bookkeeping — their incremental-scrape cursor will also reset:"
+        )
+        for brand_id, site in shared:
+            click.echo(f"  brand_id={brand_id} site={site}")
+
+    if not yes:
+        click.confirm(
+            f"Delete retailer '{retailer}': {len(products)} products, {review_count} reviews, "
+            f"and scrape_runs for {len(brand_ids)} brand(s)? This cannot be undone.",
+            abort=True,
+        )
+
+    with get_session() as session:
+        session.query(SephoraBackfillCursor).filter(
+            SephoraBackfillCursor.product_id.in_(product_ids)
+        ).delete(synchronize_session=False)
+        session.query(Review).filter(Review.product_id.in_(product_ids)).delete(synchronize_session=False)
+        session.query(Product).filter_by(retailer=retailer).delete(synchronize_session=False)
+        session.query(ScrapeRun).filter(
+            ScrapeRun.brand_id.in_(brand_ids), ScrapeRun.site.in_(sites)
+        ).delete(synchronize_session=False)
+
+    click.echo(f"Removed retailer '{retailer}': {len(products)} products, {review_count} reviews.")
 
 
 @cli.command("list-brands")

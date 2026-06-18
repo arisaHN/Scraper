@@ -11,10 +11,22 @@ REVIEWS_URL = "https://api.bazaarvoice.com/data/reviews.json"
 class BazaarvoiceScraper(BaseScraper):
     site_name = "bazaarvoice"
 
-    def __init__(self, passkey: str, locale: str = "en_US"):
+    def __init__(
+        self,
+        passkey: str,
+        locale: str = "en_US",
+        include_ratings_only: bool = False,
+        include_syndicated: bool = False,
+    ):
         super().__init__()
         self.passkey = passkey
         self.locale = locale
+        self.include_ratings_only = include_ratings_only
+        # Retailers can syndicate reviews written for the manufacturer's own site (e.g.
+        # Douglas shows reviews written on dior.com under SourceClient="dior-it"). The
+        # retailer's storefront only displays its own native reviews, so default to
+        # excluding syndicated ones to match what's actually shown on the retailer's site.
+        self.include_syndicated = include_syndicated
 
     def discover_products(self, brand_name: str) -> list[dict]:
         # Search by brand name and include review stats so we can skip products with 0 reviews.
@@ -53,20 +65,38 @@ class BazaarvoiceScraper(BaseScraper):
             self._polite_delay()
         return results
 
-    def scrape_reviews(self, product: dict, since: Optional[datetime] = None) -> Iterator[NormalizedReview]:
+    def scrape_reviews(
+        self,
+        product: dict,
+        since: Optional[datetime] = None,
+        backfill_offset: Optional[int] = None,
+        max_backfill_pages: Optional[int] = None,
+    ) -> Iterator[NormalizedReview]:
+        # No backfill cursor needed: the public REST API has no per-request bot-detection
+        # cost, so a full since-based pagination each run is cheap and safe.
         offset = 0
         total = None
         while True:
-            params = {
-                "apiversion": "5.4",
-                "passkey": self.passkey,
-                "Filter": f"ProductId:{product['external_id']}",
-                "Filter_IsRatingsOnly": "false",
-                "Sort": "SubmissionTime:desc",
-                "Limit": 100,
-                "Offset": offset,
-                "locale": self.locale,
-            }
+            # Bazaarvoice expects multiple Filter conditions as repeated "Filter" query
+            # params (e.g. Filter=ProductId:X&Filter=IsRatingsOnly:false), not as a
+            # separate "Filter_IsRatingsOnly" key — a dict can't hold two "Filter" keys,
+            # so this must be a list of tuples for both filters to actually apply.
+            # The "include_*" flags mean "don't restrict on this field" rather than
+            # "flip the filter to true" — filtering IsSyndicated:true would return only
+            # the syndicated reviews, not the union of native + syndicated.
+            params = [
+                ("apiversion", "5.4"),
+                ("passkey", self.passkey),
+                ("Filter", f"ProductId:{product['external_id']}"),
+                ("Sort", "SubmissionTime:desc"),
+                ("Limit", 100),
+                ("Offset", offset),
+                ("locale", self.locale),
+            ]
+            if not self.include_ratings_only:
+                params.append(("Filter", "IsRatingsOnly:false"))
+            if not self.include_syndicated:
+                params.append(("Filter", "IsSyndicated:false"))
             resp = self._get(REVIEWS_URL, params=params)
             data = resp.json()
             if total is None:

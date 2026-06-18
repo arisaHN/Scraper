@@ -43,14 +43,41 @@ class ReviewNormalizer:
 
     @staticmethod
     def from_sephora(raw: dict) -> NormalizedReview:
+        """Parse a review object from sephora.it's Next.js Server Action ("getReviews")."""
+        # Field values the RSC payload couldn't serialize (e.g. user opted not to share
+        # gender) come through as the literal string "$undefined" rather than being omitted.
+        def clean(value):
+            return None if value in (None, "$undefined") else value
+
+        created_at = clean(raw.get("createdAt"))
+        if isinstance(created_at, str) and created_at.startswith("$D"):
+            created_at = created_at[2:]  # RSC date-type marker prefix
+
+        vote = raw.get("vote") or {}
         return NormalizedReview(
-            external_review_id=raw["id"],
+            external_review_id=str(raw["id"]),
             source_site="sephora",
-            author=raw.get("author"),
+            author=clean(raw.get("userName")) or "Anonymous",
             rating=float(raw["rating"]) if raw.get("rating") is not None else None,
+            title=clean(raw.get("title")),
+            text=clean(raw.get("content")),
+            review_date=_parse_dt(created_at),
+            helpful_count=vote.get("like", 0) or 0,
+            verified=raw.get("purchaserType") == "BUYER",
+        )
+
+    @staticmethod
+    def from_notino(raw: dict) -> NormalizedReview:
+        """Parse a review object from notino.it's getReviews GraphQL response."""
+        return NormalizedReview(
+            external_review_id=str(raw["id"]),
+            source_site="notino",
+            author=raw.get("userName") or "Anonymous",
+            rating=float(raw["score"]) if raw.get("score") is not None else None,
             title=raw.get("title"),
             text=raw.get("text"),
-            review_date=raw.get("parsed_date") or _parse_dt(raw.get("date")),
-            verified=raw.get("verified", False),
+            review_date=_parse_dt(raw.get("createdDate")),
+            helpful_count=raw.get("like", 0) or 0,
+            verified=raw.get("authorType") == "Verified",
         )
 

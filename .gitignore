@@ -4,6 +4,6 @@ __pycache__/
 venv/
 .venv/
 .DS_Store
-exports/
 .dockerignore
 .claude/agent-memory/
+output/

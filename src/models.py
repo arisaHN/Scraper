@@ -26,6 +26,7 @@ class SiteEnum(str, enum.Enum):
     google = "google"
     bazaarvoice = "bazaarvoice"
     sephora = "sephora"
+    notino = "notino"
 
 
 class RunStatus(str, enum.Enum):
@@ -87,6 +88,24 @@ class Review(Base):
     scraped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     product: Mapped["Product"] = relationship(back_populates="reviews")
+
+
+class SephoraBackfillCursor(Base):
+    """Tracks how far the ascending-sort (oldest-first) backfill pass has reached for a
+    product. Ascending order keeps the offset stable across runs even as new reviews are
+    added (they append at the end), unlike descending order where new reviews would shift
+    every older offset. Kept as its own table rather than columns on Product since it's
+    Sephora-specific and easy to reset independently.
+    """
+
+    __tablename__ = "sephora_backfill_cursors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), unique=True, nullable=False)
+    offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    total_reviews: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ScrapeRun(Base):
