@@ -1,9 +1,11 @@
 # Review Scraper
 
-Scrapes customer reviews for a given brand from multiple retailer sites and stores them in PostgreSQL. Supports two scraper types:
+Scrapes customer reviews for a given brand from multiple retailer sites and stores them in PostgreSQL. Supports four scraper types:
 
 - **Bazaarvoice** — REST API scraper (Douglas and any other BV-powered retailer). Excludes reviews syndicated from the manufacturer's own site by default, to match what the retailer's storefront actually displays.
-- **Sephora** — Playwright/Camoufox HTML scraper for sephora.it (bypasses bot protection)
+- **Sephora** — Playwright/Camoufox HTML scraper for sephora.it (bypasses Akamai bot protection via in-page fetch to Next.js Server Actions)
+- **Notino** — Camoufox for product discovery (Cloudflare-gated pages) + plain `requests` for reviews via Apollo Persisted Queries to the non-gated `/api/product/` endpoint
+- **Marionnaud** — Camoufox for product discovery (Akamai-gated OCC/Hybris search API, called via in-page fetch) + plain `requests` for reviews via PowerReviews' display API (separate non-gated domain)
 
 ## Requirements
 
@@ -42,12 +44,14 @@ docker compose run --rm scraper add-brand Dior
 docker compose run --rm scraper scrape Dior
 
 # Scrape a specific retailer only
-docker compose run --rm scraper scrape Dior --site bazaarvoice
-docker compose run --rm scraper scrape Dior --site sephora
+docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas
+docker compose run --rm -e SEPHORA_ENABLED=1 scraper scrape Dior --site sephora
+docker compose run --rm -e NOTINO_ENABLED=1 scraper scrape Dior --site notino
+docker compose run --rm -e MARIONNAUD_ENABLED=1 scraper scrape Dior --site marionnaud
 
 # Scrape one specific product by its external ID (skips discovery — the product
 # must have already been found by a prior full scrape, so its details are known)
-docker compose run --rm scraper scrape Dior --site bazaarvoice --product-id 5010859059
+docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas --product-id 5010859059
 
 # List all tracked brands with review counts
 docker compose run --rm scraper list-brands
@@ -70,6 +74,9 @@ docker compose run --rm scraper export Dior --product-id 5397
 
 # Remove a brand and all its data
 docker compose run --rm scraper remove-brand Dior
+
+# Remove all products and reviews for a specific retailer (across all brands)
+docker compose run --rm scraper remove-retailer notino --yes
 ```
 
 The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
@@ -84,12 +91,22 @@ All configuration lives in `.env`. Copy `.env.example` to get started:
 | `BV_PASSKEY_<RETAILER>` | Bazaarvoice passkey for a retailer (e.g. `BV_PASSKEY_DOUGLAS`) |
 | `BV_LOCALE_<RETAILER>` | Locale for that retailer (e.g. `BV_LOCALE_DOUGLAS=it_IT`) |
 | `SEPHORA_ENABLED` | Set to `1` (or `true`/`yes`/`on`) to enable the Sephora scraper |
+| `NOTINO_ENABLED` | Set to `1` to enable the Notino scraper |
+| `MARIONNAUD_ENABLED` | Set to `1` to enable the Marionnaud scraper |
+| `MARIONNAUD_MERCHANT_ID` | Override PowerReviews merchant ID (has a hardcoded default) |
+| `MARIONNAUD_APIKEY` | Override PowerReviews API key (has a hardcoded default) |
+| `NOTINO_REVIEWS_HASH` | Override Apollo Persisted Query hash for `getReviews` (has a hardcoded default) |
+| `SEPHORA_NEXT_ACTION_ID` | Override Next.js server action hash (has a hardcoded default) |
 | `SCRAPE_DELAY_MIN` | Min seconds between requests (default: `0.5`) |
 | `SCRAPE_DELAY_MAX` | Max seconds between requests (default: `2.0`) |
 
 ## Automated Scraping (GitHub Actions)
 
-The workflow at `.github/workflows/scrape.yml` runs every day at 8am UTC and can also be triggered manually from the GitHub Actions tab.
+The workflow at `.github/workflows/scrape-daily.yml` runs every day at 8am UTC with three parallel jobs and can also be triggered manually from the GitHub Actions tab.
+
+- **`scrape-douglas`** — runs on `ubuntu-latest` (GitHub-hosted runner)
+- **`scrape-notino`** — runs on `self-hosted` (Italian IP needed for full catalog)
+- **`scrape-marionnaud`** — runs on `self-hosted` (Italian IP needed for full catalog)
 
 **Scraping is incremental** — on each run, only reviews newer than the last successful scrape are fetched. Re-running never creates duplicates.
 
@@ -122,7 +139,14 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 .venv/bin/python -m pytest tests/ -v
 ```
 
-`tests/test_normalizer.py` runs with no setup. `tests/test_douglas_scraper.py` hits the live Bazaarvoice API and requires `BV_PASSKEY_DOUGLAS` to be set (skipped automatically otherwise).
+| Test file | Requires | What it tests |
+|---|---|---|
+| `test_normalizer.py` | nothing | `ReviewNormalizer.from_bazaarvoice()` pure unit tests |
+| `test_sephora_normalizer.py` | nothing | Sephora RSC-stream parsing pure unit tests |
+| `test_backfill_cursor.py` | `DATABASE_URL` | Sephora backfill cursor upsert SQL against real Postgres |
+| `test_douglas_scraper.py` | `BV_PASSKEY_DOUGLAS` | Live Bazaarvoice API integration |
+| `test_notino_scraper.py` | `NOTINO_ENABLED=1` | Live Notino GraphQL API integration (no browser) |
+| `test_marionnaud_scraper.py` | `MARIONNAUD_ENABLED=1` | Live PowerReviews API integration |
 
 ## Architecture
 
@@ -130,10 +154,12 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 cli.py → src/runner.py → scraper class → src/normalizer.py → PostgreSQL
 ```
 
-| Scraper | How it works |
-|---|---|
-| `bazaarvoice.py` | Calls the Bazaarvoice REST API directly |
-| `sephora_html.py` | Loads pages in a headless Firefox (Camoufox) to bypass bot protection, extracts reviews from the DOM |
+| Scraper | Discovery | Reviews |
+|---|---|---|
+| `bazaarvoice.py` | Calls Bazaarvoice REST API directly | Same |
+| `sephora_html.py` | Camoufox browser (Akamai-gated) | In-page `fetch()` to Next.js Server Actions (Akamai-gated) |
+| `notino.py` | Camoufox browser (Cloudflare-gated) | Plain `requests` to `/api/product/` Apollo APQ endpoint |
+| `marionnaud.py` | Camoufox + in-page `fetch()` to OCC API (Akamai-gated) | Plain `requests` to PowerReviews display API |
 
 Database migrations run automatically when the container starts (`alembic upgrade head` in `entrypoint.sh`).
 

@@ -2,7 +2,7 @@ name: Scrape Sephora
 
 on:
   schedule:
-    - cron: "0 */4 * * *"  # 6x/day: 0:00, 4:00, 8:00, 12:00, 16:00, 20:00 UTC
+    - cron: "0 */12 * * *"  # 6x/day: 0:00, 4:00, 8:00, 12:00, 16:00, 20:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
         run: docker build -t scraper .
 
       - name: Run scraper
-        timeout-minutes: 90
+        timeout-minutes: 180
         run: |
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
