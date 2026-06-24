@@ -35,7 +35,7 @@ def add_brand(name: str):
         click.echo(f"  [{registry_key}] scraping...")
         try:
             count = run_brand(brand_id, name, registry_key)
-            click.echo(f"  [{registry_key}] done — {count} reviews saved.")
+            click.echo(f"  [{registry_key}] done — {count} new reviews.")
         except Exception as e:
             click.echo(f"  [{registry_key}] failed: {e}", err=True)
 
@@ -67,14 +67,14 @@ def scrape(brand: str, site: str, product_id: str):
         click.echo(f"Scraping product '{product_id}' from {site}...")
         try:
             count = run_single_product(brand_id, brand_name, site, product_id)
-            click.echo(f"Done — {count} reviews saved.")
+            click.echo(f"Done — {count} new reviews.")
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
     elif site:
         click.echo(f"Scraping {site} for '{brand_name}'...")
         try:
             count = run_brand(brand_id, brand_name, site)
-            click.echo(f"Done — {count} reviews saved.")
+            click.echo(f"Done — {count} new reviews.")
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
     else:

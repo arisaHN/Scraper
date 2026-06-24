@@ -220,7 +220,10 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
             # Use SFCC's own Search-Show AJAX endpoint, called via fetch() inside the live
             # browser tab so it carries the Akamai-validated session cookies. Direct
             # page.goto() to the catalog URL is blocked; this in-page fetch is not.
-            # Query by brand name first, then by each category to maximise coverage.
+            # Only query by category ID (brand-specific cgids from the hub page) — a
+            # free-text search (q=brand_name) returns results from other brands that
+            # Sephora's search engine associates with the query (cross-promotions, related
+            # products), causing foreign-brand products to be attributed to this brand.
             unique: dict[str, str] = {}
 
             def _fetch_sfcc(params: str) -> None:
@@ -239,11 +242,6 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
                         if pid not in unique:
                             unique[pid] = url
 
-            try:
-                _fetch_sfcc(f"q={brand_name}")
-            except Exception:
-                pass
-            self._polite_delay()
             for cgid in cgids:
                 try:
                     _fetch_sfcc(f"cgid={cgid}")

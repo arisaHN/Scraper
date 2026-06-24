@@ -26,7 +26,7 @@ SEPHORA_BACKFILL_PAGES_PER_RUN = int(os.environ.get("SEPHORA_BACKFILL_PAGES_PER_
 
 
 def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
-    """Scrape one registry entry for one brand. Returns count of reviews upserted."""
+    """Scrape one registry entry for one brand. Returns count of reviews newly inserted."""
     entry = SCRAPER_REGISTRY[registry_key]
     source_site = entry["source_site"]
     retailer = entry["retailer"]
@@ -46,6 +46,8 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
         session.flush()
         run_id = run.id
 
+    print(f"  [{registry_key}] since={since!r}", flush=True)
+
     count = 0
     try:
         products = scraper.discover_products(brand_name)
@@ -60,10 +62,10 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                 with get_session() as session:
                     has_reviews = session.query(Review).filter_by(product_id=prod_id).first() is not None
                 product_since = since if has_reviews else None
-                n_reviews = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
-                count += n_reviews
+                n_fetched, n_inserted = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
+                count += n_inserted
                 consecutive_failures = 0
-                if n_reviews:
+                if n_fetched:
                     backfill_note = ""
                     if supports_backfill:
                         with get_session() as session:
@@ -71,7 +73,8 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                         if cur and cur.total_reviews:
                             pct = int(cur.offset * 100 / cur.total_reviews)
                             backfill_note = f" [backfill {cur.offset}/{cur.total_reviews} ({pct}%)]"
-                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {n_reviews} reviews{backfill_note}", flush=True)
+                    dup_note = f" ({n_fetched - n_inserted} already in DB)" if n_fetched != n_inserted else ""
+                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {n_inserted} new reviews{dup_note}{backfill_note}", flush=True)
             except Exception as exc:
                 consecutive_failures += 1
                 print(f"  [{registry_key}] ({i}/{len(products)}) SKIP {prod_data.get('external_id')} — {exc}", flush=True)
@@ -126,9 +129,10 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
         prod_data = {"external_id": product_id, "name": product_name, "source_url": product_url}
         prod_id = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
 
-        count = _scrape_product(scraper, prod_id, prod_data, since, supports_backfill)
+        n_fetched, count = _scrape_product(scraper, prod_id, prod_data, since, supports_backfill)
 
-        print(f"  [{registry_key}] {product_name[:50]} — {count} reviews", flush=True)
+        dup_note = f" ({n_fetched - count} already in DB)" if n_fetched != count else ""
+        print(f"  [{registry_key}] {product_name[:50]} — {count} new reviews{dup_note}", flush=True)
         _finish_run(run_id, RunStatus.success, count)
     except Exception as exc:
         _finish_run(run_id, RunStatus.failed, count, str(exc)[:2000])
@@ -159,12 +163,14 @@ def run_all_sites(brand_name: str) -> dict[str, int]:
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _scrape_product(scraper, prod_id: int, prod_data: dict, since, supports_backfill: bool) -> int:
+def _scrape_product(scraper, prod_id: int, prod_data: dict, since, supports_backfill: bool) -> tuple[int, int]:
     """Run scrape_reviews for one product, upserting reviews and persisting the backfill
     cursor (if the scraper supports it) as they're produced rather than only after the
     generator finishes — so a mid-stream failure (e.g. a real block partway through a
     capped backfill pass) still saves whatever was fetched and advances the cursor,
-    instead of discarding already-fetched pages and re-requesting them next run."""
+    instead of discarding already-fetched pages and re-requesting them next run.
+
+    Returns (fetched, inserted) counts."""
     backfill_offset = None
     max_backfill_pages = None
     existing_total = None
@@ -178,13 +184,14 @@ def _scrape_product(scraper, prod_id: int, prod_data: dict, since, supports_back
             max_backfill_pages = SEPHORA_BACKFILL_PAGES_PER_RUN
 
     reviews = []
+    inserted = 0
     try:
         for review in scraper.scrape_reviews(
             prod_data, since=since, backfill_offset=backfill_offset, max_backfill_pages=max_backfill_pages
         ):
             reviews.append(review)
     finally:
-        _upsert_reviews(prod_id, reviews)
+        inserted = _upsert_reviews(prod_id, reviews)
         if supports_backfill and backfill_offset is not None:
             new_offset = getattr(scraper, "backfill_offset", backfill_offset)
             new_completed = getattr(scraper, "backfill_completed", False)
@@ -205,10 +212,11 @@ def _scrape_product(scraper, prod_id: int, prod_data: dict, since, supports_back
                 )
                 session.execute(stmt)
 
-    return len(reviews)
+    return len(reviews), inserted
 
 
 def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = None) -> int:
+    category = prod_data.get("category")
     with get_session() as session:
         stmt = (
             pg_insert(Product)
@@ -219,25 +227,25 @@ def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = N
                 source_url=prod_data.get("source_url"),
                 external_id=prod_data.get("external_id"),
                 retailer=retailer,
+                category=category,
             )
-            .on_conflict_do_nothing(constraint="uq_product_site_external")
+            # Update category on re-discovery so existing products get their label
+            # filled in when the scraper starts returning category data for the first time.
+            .on_conflict_do_update(
+                constraint="uq_product_site_external",
+                set_={"category": category},
+            )
             .returning(Product.id)
         )
         result = session.execute(stmt)
-        row = result.fetchone()
-        if row:
-            return row[0]
-        return (
-            session.query(Product.id)
-            .filter_by(source_site=site, external_id=prod_data.get("external_id"), retailer=retailer)
-            .scalar()
-        )
+        return result.scalar_one()
 
 
-def _upsert_reviews(prod_id: int, reviews: list) -> None:
-    """Upsert all of one product's reviews in a single transaction."""
+def _upsert_reviews(prod_id: int, reviews: list) -> int:
+    """Upsert all of one product's reviews in a single transaction.
+    Returns the count of rows actually inserted (conflicts excluded)."""
     if not reviews:
-        return
+        return 0
     with get_session() as session:
         stmt = (
             pg_insert(Review)
@@ -259,8 +267,10 @@ def _upsert_reviews(prod_id: int, reviews: list) -> None:
                 ]
             )
             .on_conflict_do_nothing(constraint="uq_review_site_external")
+            .returning(Review.id)
         )
-        session.execute(stmt)
+        result = session.execute(stmt)
+        return len(result.fetchall())
 
 
 def _finish_run(run_id: int, status: RunStatus, count: int, error: str = None):
