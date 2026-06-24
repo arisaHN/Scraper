@@ -23,7 +23,7 @@ def export_brand(
         if not brand:
             raise ValueError(f"Brand '{brand_name}' not found.")
         query = (
-            session.query(Review, Product.id, Product.name, Product.source_url, Product.retailer)
+            session.query(Review, Product.id, Product.name, Product.source_url, Product.retailer, Product.category)
             .join(Product, Review.product_id == Product.id)
             .filter(Product.brand_id == brand.id)
         )
@@ -41,6 +41,7 @@ def export_brand(
                 "product_id": product_id,
                 "product_name": product_name,
                 "product_url": product_url,
+                "product_category": product_category,
                 "external_review_id": r.external_review_id,
                 "author": r.author,
                 "rating": r.rating,
@@ -51,7 +52,7 @@ def export_brand(
                 "verified": r.verified,
                 "scraped_at": r.scraped_at.isoformat(),
             }
-            for r, product_id, product_name, product_url, retailer in rows
+            for r, product_id, product_name, product_url, retailer, product_category in rows
         ]
 
     if not output_path:

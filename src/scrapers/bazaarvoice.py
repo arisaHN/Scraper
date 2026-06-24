@@ -17,6 +17,7 @@ class BazaarvoiceScraper(BaseScraper):
         locale: str = "en_US",
         include_ratings_only: bool = False,
         include_syndicated: bool = False,
+        category_map: dict = None,
     ):
         super().__init__()
         self.passkey = passkey
@@ -27,6 +28,9 @@ class BazaarvoiceScraper(BaseScraper):
         # retailer's storefront only displays its own native reviews, so default to
         # excluding syndicated ones to match what's actually shown on the retailer's site.
         self.include_syndicated = include_syndicated
+        # Optional retailer-specific map from 4-digit CategoryId prefix → human label.
+        # Falls back to the raw CategoryId string when the prefix isn't in the map.
+        self.category_map = category_map or {}
 
     def discover_products(self, brand_name: str) -> list[dict]:
         # Search by brand name and include review stats so we can skip products with 0 reviews.
@@ -52,11 +56,14 @@ class BazaarvoiceScraper(BaseScraper):
                     continue
                 review_count = (p.get("ReviewStatistics") or {}).get("TotalReviewCount", 0)
                 if review_count > 0:
+                    raw_cat = p.get("CategoryId") or ""
+                    category = self.category_map.get(raw_cat[:4]) or (raw_cat or None)
                     results.append(
                         {
                             "name": p.get("Name") or p["Id"],
                             "source_url": p.get("ProductPageUrl") or "",
                             "external_id": p["Id"],
+                            "category": category,
                         }
                     )
             offset += 100
