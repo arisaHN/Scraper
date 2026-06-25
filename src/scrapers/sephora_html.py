@@ -220,11 +220,15 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
             # Use SFCC's own Search-Show AJAX endpoint, called via fetch() inside the live
             # browser tab so it carries the Akamai-validated session cookies. Direct
             # page.goto() to the catalog URL is blocked; this in-page fetch is not.
-            # Only query by category ID (brand-specific cgids from the hub page) — a
-            # free-text search (q=brand_name) returns results from other brands that
-            # Sephora's search engine associates with the query (cross-promotions, related
-            # products), causing foreign-brand products to be attributed to this brand.
+            # Each query uses both cgid= (category) and prefn1/prefv1 (brand refinement):
+            # cgid= alone returns all brands in that category (e.g. a search for "Eau de
+            # Parfum" returns Chanel, Mugler, etc. alongside Dior). The brand filter pins
+            # results to this brand only.
             unique: dict[str, str] = {}
+
+            # URL-encode the brand name for use as a SFCC refinement value.
+            from urllib.parse import quote as _quote
+            brand_param = _quote(brand_name, safe="")
 
             def _fetch_sfcc(params: str) -> None:
                 html = page.evaluate(f"""async () => {{
@@ -244,7 +248,10 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
 
             for cgid in cgids:
                 try:
-                    _fetch_sfcc(f"cgid={cgid}")
+                    # cgid= scopes to the category, prefn1/prefv1 further restrict to
+                    # this brand only — without the brand filter, cgid= returns all
+                    # brands in that category (e.g. Chanel Chance in "Eau de Parfum").
+                    _fetch_sfcc(f"cgid={cgid}&prefn1=brand&prefv1={brand_param}")
                 except Exception:
                     pass
                 self._polite_delay()
