@@ -79,7 +79,7 @@ docker compose run --rm scraper remove-brand Dior
 docker compose run --rm scraper remove-retailer notino --yes
 ```
 
-The exported CSV includes `product_id`, `product_name`, `product_url`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
+The exported CSV includes `product_id`, `product_name`, `product_url`, `product_category`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
 
 ## Configuration
 
@@ -133,6 +133,9 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 2. Open browser DevTools → Network tab → filter by `bazaarvoice`
 3. The passkey appears in every `api.bazaarvoice.com` request URL as `passkey=xxxxx`
 
+**Category mapping for a new BV retailer:**
+Each retailer uses its own internal `CategoryId` codes. To add granular labels, add an entry to `_BV_CATEGORY_MAPS` in `src/scrapers/__init__.py` keyed by the retailer name (lowercase). The map keys are the first 4 digits of the `CategoryId` (e.g. `"0302"`) and values are human-readable labels. Products whose prefix isn't in the map fall back to the raw `CategoryId` string.
+
 ## Testing
 
 ```bash
@@ -144,9 +147,10 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 | `test_normalizer.py` | nothing | `ReviewNormalizer.from_bazaarvoice()` pure unit tests |
 | `test_sephora_normalizer.py` | nothing | Sephora RSC-stream parsing pure unit tests |
 | `test_backfill_cursor.py` | `DATABASE_URL` | Sephora backfill cursor upsert SQL against real Postgres |
-| `test_douglas_scraper.py` | `BV_PASSKEY_DOUGLAS` | Live Bazaarvoice API integration |
+| `test_douglas_scraper.py` | `BV_PASSKEY_DOUGLAS` | Live Bazaarvoice API integration; count tests use `>=` floor so they don't break as new reviews accumulate |
 | `test_notino_scraper.py` | `NOTINO_ENABLED=1` | Live Notino GraphQL API integration (no browser) |
 | `test_marionnaud_scraper.py` | `MARIONNAUD_ENABLED=1` | Live PowerReviews API integration |
+| `test_sephora_scraper.py` | `SEPHORA_ENABLED=1` | Live Sephora discovery — verifies cross-brand contamination fix (YSL product `P10055930` must not appear in Dior results); requires self-hosted runner (Akamai blocks standard CI) |
 
 ## Architecture
 

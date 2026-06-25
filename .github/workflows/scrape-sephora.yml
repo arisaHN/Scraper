@@ -2,7 +2,7 @@ name: Scrape Sephora
 
 on:
   schedule:
-    - cron: "0 */12 * * *"  # 6x/day: 0:00, 4:00, 8:00, 12:00, 16:00, 20:00 UTC
+    - cron: "0 10 * * *"
   workflow_dispatch:
 
 jobs:
