@@ -121,3 +121,12 @@ if os.environ.get("DITANO_ENABLED", "").lower() in ("1", "true", "yes", "on"):
         "kwargs": {},
         "retailer": "ditano",
     }
+
+if os.environ.get("PINALLI_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .pinalli import PinalliScraper
+    SCRAPER_REGISTRY["pinalli"] = {
+        "class": PinalliScraper,
+        "source_site": "pinalli",
+        "kwargs": {},
+        "retailer": "pinalli",
+    }

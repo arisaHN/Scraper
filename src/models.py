@@ -30,6 +30,7 @@ class SiteEnum(str, enum.Enum):
     marionnaud = "marionnaud"
     sensation = "sensation"
     ditano = "ditano"
+    pinalli = "pinalli"
 
 
 class RunStatus(str, enum.Enum):

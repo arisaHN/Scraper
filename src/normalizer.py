@@ -106,11 +106,15 @@ class ReviewNormalizer:
         )
 
     @staticmethod
-    def from_ditano(raw: dict) -> NormalizedReview:
-        """Parse a review dict extracted from ditano.com's Judge.me review widget HTML."""
+    def from_judgeme(raw: dict, source_site: str) -> NormalizedReview:
+        """Parse a review dict extracted from a Judge.me review-widget HTML element.
+
+        Shared by every Shopify+Judge.me store (ditano, pinalli, …); the caller passes its
+        own ``source_site`` since the same widget format backs all of them.
+        """
         return NormalizedReview(
             external_review_id=str(raw["review_id"]),
-            source_site="ditano",
+            source_site=source_site,
             author=raw.get("author") or "Anonymous",
             rating=float(raw["score"]) if raw.get("score") not in (None, "") else None,
             title=raw.get("title") or None,
@@ -119,6 +123,11 @@ class ReviewNormalizer:
             helpful_count=int(raw.get("thumb_up") or 0),
             verified=bool(raw.get("verified")),
         )
+
+    @staticmethod
+    def from_ditano(raw: dict) -> NormalizedReview:
+        """Parse a review dict from ditano.com's Judge.me widget (see from_judgeme)."""
+        return ReviewNormalizer.from_judgeme(raw, "ditano")
 
     @staticmethod
     def from_notino(raw: dict) -> NormalizedReview:
