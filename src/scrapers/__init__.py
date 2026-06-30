@@ -103,3 +103,21 @@ if os.environ.get("MARIONNAUD_ENABLED", "").lower() in ("1", "true", "yes", "on"
         "kwargs": {},
         "retailer": "marionnaud",
     }
+
+if os.environ.get("SENSATION_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .sensation import SensationScraper
+    SCRAPER_REGISTRY["sensation"] = {
+        "class": SensationScraper,
+        "source_site": "sensation",
+        "kwargs": {},
+        "retailer": "sensation",
+    }
+
+if os.environ.get("DITANO_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .ditano import DitanoScraper
+    SCRAPER_REGISTRY["ditano"] = {
+        "class": DitanoScraper,
+        "source_site": "ditano",
+        "kwargs": {},
+        "retailer": "ditano",
+    }

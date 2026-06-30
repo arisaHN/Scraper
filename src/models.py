@@ -28,6 +28,8 @@ class SiteEnum(str, enum.Enum):
     sephora = "sephora"
     notino = "notino"
     marionnaud = "marionnaud"
+    sensation = "sensation"
+    ditano = "ditano"
 
 
 class RunStatus(str, enum.Enum):
