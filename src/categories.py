@@ -39,6 +39,12 @@ CATEGORY_GROUP: dict[str, str] = {
     "Body Fragrance Mist": "Body Care",
     # Haircare
     "Haircare": "Haircare",
+    # ditano.com (Shopify product_type, Italian) — store's own top-level categories
+    "Fragranze": "Fragrance",
+    "Fragranze di nicchia": "Fragrance",
+    "Makeup": "Makeup",
+    "Hair": "Haircare",
+    "Solari": "Body Care",
 }
 
 

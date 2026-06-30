@@ -86,6 +86,41 @@ class ReviewNormalizer:
         )
 
     @staticmethod
+    def from_sensation(raw: dict) -> NormalizedReview:
+        """Parse a review object from sensationprofumerie.it's /api/products/{id}/reviews.
+
+        Reviews are syndicated from third-party aggregators (``provider`` is "trustpilot"
+        or "feedaty"); there's no title field and no per-review verified-purchase flag, so
+        ``verified`` is left False.
+        """
+        return NormalizedReview(
+            external_review_id=str(raw["reviewId"]),
+            source_site="sensation",
+            author=raw.get("authorName") or "Anonymous",
+            rating=float(raw["rating"]) if raw.get("rating") is not None else None,
+            title=None,
+            text=raw.get("text"),
+            review_date=_parse_dt(raw.get("creationDate")),
+            helpful_count=0,
+            verified=False,
+        )
+
+    @staticmethod
+    def from_ditano(raw: dict) -> NormalizedReview:
+        """Parse a review dict extracted from ditano.com's Judge.me review widget HTML."""
+        return NormalizedReview(
+            external_review_id=str(raw["review_id"]),
+            source_site="ditano",
+            author=raw.get("author") or "Anonymous",
+            rating=float(raw["score"]) if raw.get("score") not in (None, "") else None,
+            title=raw.get("title") or None,
+            text=raw.get("body") or None,
+            review_date=_parse_dt(raw.get("timestamp")),
+            helpful_count=int(raw.get("thumb_up") or 0),
+            verified=bool(raw.get("verified")),
+        )
+
+    @staticmethod
     def from_notino(raw: dict) -> NormalizedReview:
         """Parse a review object from notino.it's getReviews GraphQL response."""
         return NormalizedReview(
