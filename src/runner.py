@@ -66,7 +66,7 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                 n_fetched, n_inserted = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
                 count += n_inserted
                 consecutive_failures = 0
-                if n_fetched:
+                if n_inserted:
                     backfill_note = ""
                     if supports_backfill:
                         with get_session() as session:
@@ -74,8 +74,7 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                         if cur and cur.total_reviews:
                             pct = int(cur.offset * 100 / cur.total_reviews)
                             backfill_note = f" [backfill {cur.offset}/{cur.total_reviews} ({pct}%)]"
-                    dup_note = f" ({n_fetched - n_inserted} already in DB)" if n_fetched != n_inserted else ""
-                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {n_inserted} new reviews{dup_note}{backfill_note}", flush=True)
+                    print(f"  [{registry_key}] ({i}/{len(products)}) {prod_data['name'][:50]} — {n_inserted} new reviews{backfill_note}", flush=True)
             except Exception as exc:
                 consecutive_failures += 1
                 print(f"  [{registry_key}] ({i}/{len(products)}) SKIP {prod_data.get('external_id')} — {exc}", flush=True)

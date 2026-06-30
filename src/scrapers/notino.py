@@ -16,7 +16,7 @@ _PAGE_SIZE = 20
 # Stable hash until Notino redeploys their bundle. Override via env var if it rotates.
 _REVIEWS_HASH = os.environ.get(
     "NOTINO_REVIEWS_HASH",
-    "9b49406d4f6df65fb02600d8ef3194612a78b86b984d4b18aff31e0d5c85fa0b",
+    "3f11578a74244bc68adb532390bca91628c6cc23d8e5debaa0ccf8a2d7559fee",
 )
 
 

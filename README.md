@@ -79,7 +79,7 @@ docker compose run --rm scraper remove-brand Dior
 docker compose run --rm scraper remove-retailer notino --yes
 ```
 
-The exported CSV includes `product_id`, `product_name`, `product_url`, `product_category`, `source_site`, and `retailer` columns. Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
+The exported CSV includes `product_id`, `product_name`, `product_url`, `product_category`, `product_category_group`, `source_site`, and `retailer` columns. `product_category` is the granular label (e.g. `Lipstick`, `Women's Fragrance`) and `product_category_group` is the broad bucket (`Makeup`, `Fragrance`, `Skincare`, `Body Care`, `Haircare`). Files are saved in the current directory with an auto-generated name (e.g. `dior_20260610_143022.csv`). Use `-o <path>` to choose the location.
 
 ## Configuration
 
@@ -135,6 +135,8 @@ The scraper auto-registers as `bazaarvoice_newretailer` on the next run.
 
 **Category mapping for a new BV retailer:**
 Each retailer uses its own internal `CategoryId` codes. To add granular labels, add an entry to `_BV_CATEGORY_MAPS` in `src/scrapers/__init__.py` keyed by the retailer name (lowercase). The map keys are the first 4 digits of the `CategoryId` (e.g. `"0302"`) and values are human-readable labels. Products whose prefix isn't in the map fall back to the raw `CategoryId` string.
+
+To also assign a broad group to those labels, add the new label → group entry to `CATEGORY_GROUP` in `src/categories.py`.
 
 ## Testing
 
