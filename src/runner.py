@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from .categories import category_group as _category_group
 from .database import get_session
 from .models import Brand, Product, Review, RunStatus, ScrapeRun, SephoraBackfillCursor
 from .scrapers import SCRAPER_REGISTRY
@@ -217,6 +218,7 @@ def _scrape_product(scraper, prod_id: int, prod_data: dict, since, supports_back
 
 def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = None) -> int:
     category = prod_data.get("category")
+    group = _category_group(category)
     with get_session() as session:
         stmt = (
             pg_insert(Product)
@@ -228,12 +230,13 @@ def _upsert_product(brand_id: int, site: str, prod_data: dict, retailer: str = N
                 external_id=prod_data.get("external_id"),
                 retailer=retailer,
                 category=category,
+                category_group=group,
             )
-            # Update category on re-discovery so existing products get their label
-            # filled in when the scraper starts returning category data for the first time.
+            # Update category fields on re-discovery so existing products get their
+            # labels filled in when the scraper starts returning category data.
             .on_conflict_do_update(
                 constraint="uq_product_site_external",
-                set_={"category": category},
+                set_={"category": category, "category_group": group},
             )
             .returning(Product.id)
         )

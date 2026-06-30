@@ -6,54 +6,6 @@ from typing import Optional
 from .database import get_session
 from .models import Brand, Product, Review
 
-# Maps granular category labels → broad group. Derived at export time so no
-# extra DB column or migration is needed. Add new labels here when new
-# retailer category maps are added in src/scrapers/__init__.py.
-_CATEGORY_GROUP: dict[str, str] = {
-    # Fragrance
-    "Women's Fragrance": "Fragrance",
-    "Men's Fragrance": "Fragrance",
-    "Fragrance Gift Set": "Fragrance",
-    "Hair Fragrance": "Fragrance",
-    # Makeup
-    "Foundation & Concealer": "Makeup",
-    "Lipstick": "Makeup",
-    "Eye Makeup & Mascara": "Makeup",
-    "Nail Polish": "Makeup",
-    "Eyebrow": "Makeup",
-    "Eye Palette": "Makeup",
-    "Bronzer & Highlighter": "Makeup",
-    "Makeup Brushes": "Makeup",
-    "Makeup Accessories": "Makeup",
-    "Lip Care": "Makeup",
-    # Skincare
-    "Moisturizer": "Skincare",
-    "Serum": "Skincare",
-    "Cleanser": "Skincare",
-    "Face Mask": "Skincare",
-    "Eye & Lip Skincare": "Skincare",
-    "Self-Tanner": "Skincare",
-    "Skincare": "Skincare",
-    "Skincare Gift Set": "Skincare",
-    "Men's Skincare": "Skincare",
-    # Body Care
-    "Shower Gel": "Body Care",
-    "Body Lotion & Oil": "Body Care",
-    "Hand Cream": "Body Care",
-    "Shaving": "Body Care",
-    "Sunscreen": "Body Care",
-    "Suncare": "Body Care",
-    "Body Fragrance Mist": "Body Care",
-    # Haircare
-    "Haircare": "Haircare",
-}
-
-
-def _category_group(category: Optional[str]) -> Optional[str]:
-    if not category:
-        return None
-    return _CATEGORY_GROUP.get(category)
-
 
 def _normalize_whitespace(s: str) -> str:
     import unicodedata
@@ -72,7 +24,15 @@ def export_brand(
         if not brand:
             raise ValueError(f"Brand '{brand_name}' not found.")
         query = (
-            session.query(Review, Product.id, Product.name, Product.source_url, Product.retailer, Product.category)
+            session.query(
+                Review,
+                Product.id,
+                Product.name,
+                Product.source_url,
+                Product.retailer,
+                Product.category,
+                Product.category_group,
+            )
             .join(Product, Review.product_id == Product.id)
             .filter(Product.brand_id == brand.id)
         )
@@ -91,7 +51,7 @@ def export_brand(
                 "product_name": product_name,
                 "product_url": product_url,
                 "product_category": product_category,
-                "product_category_group": _category_group(product_category),
+                "product_category_group": product_category_group,
                 "external_review_id": r.external_review_id,
                 "author": r.author,
                 "rating": r.rating,
@@ -102,7 +62,7 @@ def export_brand(
                 "verified": r.verified,
                 "scraped_at": r.scraped_at.isoformat(),
             }
-            for r, product_id, product_name, product_url, retailer, product_category in rows
+            for r, product_id, product_name, product_url, retailer, product_category, product_category_group in rows
         ]
 
     if not output_path:

@@ -62,6 +62,7 @@ class Product(Base):
     external_id: Mapped[Optional[str]] = mapped_column(String(512))
     retailer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    category_group: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     brand: Mapped["Brand"] = relationship(back_populates="products")
