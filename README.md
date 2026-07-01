@@ -2,7 +2,7 @@
 
 Scrapes customer reviews for a given brand from multiple retailer sites and stores them in PostgreSQL. Supports eight scraper types:
 
-- **Bazaarvoice** — REST API scraper (Douglas and any other BV-powered retailer). Excludes reviews syndicated from the manufacturer's own site by default, to match what the retailer's storefront actually displays.
+- **Bazaarvoice** — REST API scraper (Douglas, Dior, and any other BV-powered retailer). Excludes reviews syndicated from the manufacturer's own site by default, to match what the retailer's storefront actually displays. Dior's own site (`bazaarvoice_dior`) is the exception: as the manufacturer's own site it displays syndicated reviews from other Dior country sites, so it's configured to include them; it also collapses Bazaarvoice's shade/size "family" variants (e.g. ~30 lipstick shades sharing one review pool) down to a single representative product per family, so one real product doesn't surface as dozens of near-duplicate DB rows.
 - **Sephora** — Playwright/Camoufox HTML scraper for sephora.it (bypasses Akamai bot protection via in-page fetch to Next.js Server Actions)
 - **Notino** — Camoufox for product discovery (Cloudflare-gated pages) + plain `requests` for reviews via Apollo Persisted Queries to the non-gated `/api/product/` endpoint
 - **Marionnaud** — Camoufox for product discovery (Akamai-gated OCC/Hybris search API, called via in-page fetch) + plain `requests` for reviews via PowerReviews' display API (separate non-gated domain)
@@ -49,6 +49,7 @@ docker compose run --rm scraper scrape Dior
 
 # Scrape a specific retailer only
 docker compose run --rm scraper scrape Dior --site bazaarvoice_douglas
+docker compose run --rm scraper scrape Dior --site bazaarvoice_dior
 docker compose run --rm -e SEPHORA_ENABLED=1 scraper scrape Dior --site sephora
 docker compose run --rm -e NOTINO_ENABLED=1 scraper scrape Dior --site notino
 docker compose run --rm -e MARIONNAUD_ENABLED=1 scraper scrape Dior --site marionnaud
@@ -120,7 +121,7 @@ All configuration lives in `.env`. Copy `.env.example` to get started:
 
 The workflow at `.github/workflows/scrape-daily.yml` runs every day at 9am UTC with two jobs and can also be triggered manually from the GitHub Actions tab.
 
-- **`scrape-api-sites`** — runs on `ubuntu-latest` (GitHub-hosted runner); runs Douglas, Sensation, Ditano, Pinalli, and Primor as separate `continue-on-error: true` steps sharing one Docker build, so one site failing doesn't block the others in the same job
+- **`scrape-api-sites`** — runs on `ubuntu-latest` (GitHub-hosted runner); runs Douglas, Dior, Sensation, Ditano, Pinalli, and Primor as separate `continue-on-error: true` steps sharing one Docker build, so one site failing doesn't block the others in the same job
 - **`scrape-self-hosted-sites`** — runs on `self-hosted` (Italian IP needed for full catalog); runs Notino and Marionnaud as separate `continue-on-error: true` steps sharing one Docker build — merged into a single job since there's only one self-hosted runner, so separate jobs bought no parallelism and just built the image twice
 
 Sephora has its own workflow, `.github/workflows/scrape-sephora.yml` — a separate self-hosted job on a 10am UTC schedule with a 180-minute timeout, kept apart from the shared daily workflow because of its Akamai bot-detection risk (see Architecture below).
@@ -133,6 +134,7 @@ To enable, add these secrets to your GitHub repo under **Settings → Secrets an
 |---|---|
 | `DATABASE_URL` | Your Supabase connection string |
 | `BV_PASSKEY_DOUGLAS` | Your Bazaarvoice passkey for Douglas |
+| `BV_PASSKEY_DIOR` | Your Bazaarvoice passkey for Dior's own site |
 
 ## Adding a New Bazaarvoice Retailer
 
@@ -155,6 +157,10 @@ Each retailer uses its own internal `CategoryId` codes. To add granular labels, 
 
 To also assign a broad group to those labels, add the new label → group entry to `CATEGORY_GROUP` in `src/categories.py`.
 
+**Two opt-in flags for edge cases** (both default off, both added in `src/scrapers/__init__.py`; Dior is currently the only retailer using either):
+- `_BV_INCLUDE_SYNDICATED` — add a retailer here if its *own* product pages display reviews syndicated in from another site on the same BV account (check by inspecting the live page's review-widget request for an `IsSyndicated` filter). Most retailers only show their own natively-collected reviews and should stay excluded (the default).
+- `_BV_DEDUPE_FAMILIES` — add a retailer here if its catalog registers a separate product ID per shade/size variant that all share one Bazaarvoice "family" review pool (exposed as the product's `FamilyIds[0]`). Collapses each family down to a single representative product (preferring one with a real `ProductPageUrl`, then the highest native review count) instead of one DB row per variant.
+
 ## Testing
 
 ```bash
@@ -167,6 +173,8 @@ To also assign a broad group to those labels, add the new label → group entry 
 | `test_sephora_normalizer.py` | nothing | Sephora RSC-stream parsing pure unit tests |
 | `test_backfill_cursor.py` | `DATABASE_URL` | Sephora backfill cursor upsert SQL against real Postgres |
 | `test_douglas_scraper.py` | `BV_PASSKEY_DOUGLAS` | Live Bazaarvoice API integration; count tests use `>=` floor so they don't break as new reviews accumulate |
+| `test_dior_scraper.py` | `BV_PASSKEY_DIOR` | Live Bazaarvoice API integration against dior.com's own account; verifies `include_syndicated=True` is needed to match the site's displayed review count |
+| `test_bazaarvoice_dedupe.py` | nothing | Pure unit tests for the family-variant dedup logic (`_dedupe_by_family`) against synthetic product dicts |
 | `test_notino_scraper.py` | `NOTINO_ENABLED=1` | Live Notino GraphQL API integration (no browser) |
 | `test_marionnaud_scraper.py` | `MARIONNAUD_ENABLED=1` | Live PowerReviews API integration |
 | `test_sephora_scraper.py` | `SEPHORA_ENABLED=1` | Live Sephora discovery — verifies cross-brand contamination fix (YSL product `P10055930` must not appear in Dior results); requires self-hosted runner (Akamai blocks standard CI) |

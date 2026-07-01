@@ -239,3 +239,30 @@ The `coreBundle.js` driver crashes when bot-detection JS throws errors without l
 ```
 SEPHORA_ENABLED=1   # also accepts true/yes/on, in .env or as -e flag to docker run
 ```
+
+## CI / GitHub Actions
+
+Two workflow files, neither using `docker compose` — both build the image with plain
+`docker build -t scraper .` then run `docker run --rm -e KEY=value ... scraper scrape Dior --site
+<key>`, one step per retailer, each `continue-on-error: true` so one retailer failing doesn't
+block the others in the same job. There's no loop over `SCRAPER_REGISTRY` — every retailer's
+step is hand-written, mirroring the pattern of the retailer next to it.
+
+- `.github/workflows/scrape-daily.yml` — `cron: "0 9 * * *"` + `workflow_dispatch`. Two jobs:
+  `scrape-api-sites` (`ubuntu-latest`, no browser needed) runs douglas, **dior**, sensation,
+  ditano, pinalli, primor; `scrape-self-hosted-sites` (`self-hosted`, needs an Italian IP for
+  full catalog + Camoufox) runs notino and marionnaud. Both jobs share the single workflow-level
+  schedule.
+- `.github/workflows/scrape-sephora.yml` — its own file, own `self-hosted` job, offset by an hour
+  (`cron: "0 10 * * *"`) with a 180-minute timeout — kept separate because of Sephora's Akamai
+  request-volume blocking risk (see Backfill cursor section above); a single retailer failing
+  here has no `continue-on-error` neighbor to protect, so it's isolated at the workflow level
+  instead.
+- Env vars are passed as literal `-e KEY=value` flags on the `docker run` command line — not
+  `.env`/`env_file` (that's local-dev-only, via `docker-compose.yml`). Only `DATABASE_URL` and
+  each retailer's `BV_PASSKEY_*` come from GitHub Actions secrets (`${{ secrets.* }}`); feature
+  flags (`SEPHORA_ENABLED`, `DITANO_ENABLED`, etc.), locales (`BV_LOCALE_*`), and
+  `SCRAPE_DELAY_MIN`/`MAX` are hardcoded literals directly in the YAML.
+- Dior's own site (`bazaarvoice_dior`) lives in the `scrape-api-sites` job right after douglas,
+  since it needs no browser — same tier. Its step needs a `BV_PASSKEY_DIOR` secret (added to the
+  repo separately from code changes, same as any other retailer's passkey).
