@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  scrape-douglas:
+  scrape-api-sites:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -15,7 +15,8 @@ jobs:
       - name: Build image
         run: docker build -t scraper .
 
-      - name: Run scraper
+      - name: Run scraper - douglas
+        continue-on-error: true
         run: |
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
@@ -24,6 +25,36 @@ jobs:
             -e SCRAPE_DELAY_MIN=0.5 \
             -e SCRAPE_DELAY_MAX=2.0 \
             scraper scrape Dior --site bazaarvoice_douglas
+
+      - name: Run scraper - sensation
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e SENSATION_ENABLED=1 \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior --site sensation
+
+      - name: Run scraper - ditano
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e DITANO_ENABLED=1 \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior --site ditano
+
+      - name: Run scraper - pinalli
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e PINALLI_ENABLED=1 \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior --site pinalli
 
   scrape-notino:
     runs-on: self-hosted
