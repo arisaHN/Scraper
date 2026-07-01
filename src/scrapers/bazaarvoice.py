@@ -18,6 +18,7 @@ class BazaarvoiceScraper(BaseScraper):
         include_ratings_only: bool = False,
         include_syndicated: bool = False,
         category_map: dict = None,
+        dedupe_family_variants: bool = False,
     ):
         super().__init__()
         self.passkey = passkey
@@ -31,6 +32,17 @@ class BazaarvoiceScraper(BaseScraper):
         # Optional retailer-specific map from 4-digit CategoryId prefix → human label.
         # Falls back to the raw CategoryId string when the prefix isn't in the map.
         self.category_map = category_map or {}
+        # Some catalogs (e.g. Dior) register a separate product Id per shade/size variant,
+        # all sharing one Bazaarvoice "family" (BV's own product-family grouping, exposed as
+        # the product's FamilyIds[0]) and rolling up the same shared review pool under
+        # BV_FE_EXPAND — verified live: querying a lightly-reviewed shade variant's Id
+        # returns reviews natively tagged with *other* sibling Ids, not itself, while one
+        # dominant "canonical" member of the family holds the bulk of genuinely-own reviews.
+        # When True, discover_products() collapses each family down to a single
+        # representative product (preferring one with a real ProductPageUrl, then the
+        # highest native review count) instead of returning every variant Id — otherwise a
+        # single real product surfaces as dozens/hundreds of near-duplicate DB rows.
+        self.dedupe_family_variants = dedupe_family_variants
 
     def discover_products(self, brand_name: str) -> list[dict]:
         # Search by brand name and include review stats so we can skip products with 0 reviews.
@@ -64,13 +76,34 @@ class BazaarvoiceScraper(BaseScraper):
                             "source_url": p.get("ProductPageUrl") or "",
                             "external_id": p["Id"],
                             "category": category,
+                            "_review_count": review_count,
+                            "_family_id": (p.get("FamilyIds") or [None])[0],
                         }
                     )
             offset += 100
             if offset >= (total or 0):
                 break
             self._polite_delay()
-        return results
+        if self.dedupe_family_variants:
+            results = self._dedupe_by_family(results)
+        return [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
+
+    @staticmethod
+    def _dedupe_by_family(results: list[dict]) -> list[dict]:
+        # Products with no FamilyIds (standalone) key off their own external_id so they
+        # never collide with a real family group.
+        best_by_family: dict = {}
+        for r in results:
+            family_key = r["_family_id"] or r["external_id"]
+            current = best_by_family.get(family_key)
+            if current is None:
+                best_by_family[family_key] = r
+                continue
+            candidate_has_url = bool(r["source_url"])
+            current_has_url = bool(current["source_url"])
+            if (candidate_has_url, r["_review_count"]) > (current_has_url, current["_review_count"]):
+                best_by_family[family_key] = r
+        return list(best_by_family.values())
 
     def scrape_reviews(
         self,

@@ -73,6 +73,13 @@ _BV_CATEGORY_MAPS: dict[str, dict] = {
 # own natively-collected reviews.
 _BV_INCLUDE_SYNDICATED: set[str] = {"dior"}
 
+# Retailers whose catalog registers a separate product Id per shade/size variant, all
+# sharing one Bazaarvoice "family" review pool (see BazaarvoiceScraper.__init__ for the
+# live-verified mechanics). Collapses each family to a single representative product in
+# discover_products() instead of one DB row per variant. Dior's catalog is heavy with
+# these (e.g. ~30 Rouge Dior lipstick shades all sharing one family).
+_BV_DEDUPE_FAMILIES: set[str] = {"dior"}
+
 SCRAPER_REGISTRY: dict[str, dict] = {}
 
 for _key, _passkey in os.environ.items():
@@ -81,6 +88,7 @@ for _key, _passkey in os.environ.items():
         _locale = os.environ.get(f"BV_LOCALE_{_retailer.upper()}", os.environ.get("BV_LOCALE", "en_US"))
         _cat_map = _BV_CATEGORY_MAPS.get(_retailer, {})
         _include_syndicated = _retailer in _BV_INCLUDE_SYNDICATED
+        _dedupe_family_variants = _retailer in _BV_DEDUPE_FAMILIES
         SCRAPER_REGISTRY[f"bazaarvoice_{_retailer}"] = {
             "class": BazaarvoiceScraper,
             "source_site": "bazaarvoice",
@@ -89,6 +97,7 @@ for _key, _passkey in os.environ.items():
                 "locale": _locale,
                 "category_map": _cat_map,
                 "include_syndicated": _include_syndicated,
+                "dedupe_family_variants": _dedupe_family_variants,
             },
             "retailer": _retailer,
         }
