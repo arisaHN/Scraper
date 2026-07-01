@@ -56,7 +56,17 @@ jobs:
             -e SCRAPE_DELAY_MAX=2.0 \
             scraper scrape Dior --site pinalli
 
-  scrape-notino:
+      - name: Run scraper - primor
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e PRIMOR_ENABLED=1 \
+            -e SCRAPE_DELAY_MIN=0.5 \
+            -e SCRAPE_DELAY_MAX=2.0 \
+            scraper scrape Dior --site primor
+
+  scrape-self-hosted-sites:
     runs-on: self-hosted
     steps:
       - name: Checkout code
@@ -65,7 +75,8 @@ jobs:
       - name: Build image
         run: docker build -t scraper .
 
-      - name: Run scraper
+      - name: Run scraper - notino
+        continue-on-error: true
         run: |
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
@@ -74,16 +85,8 @@ jobs:
             -e SCRAPE_DELAY_MAX=2.0 \
             scraper scrape Dior --site notino
 
-  scrape-marionnaud:
-    runs-on: self-hosted
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build image
-        run: docker build -t scraper .
-
-      - name: Run scraper
+      - name: Run scraper - marionnaud
+        continue-on-error: true
         run: |
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
