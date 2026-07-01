@@ -130,3 +130,12 @@ if os.environ.get("PINALLI_ENABLED", "").lower() in ("1", "true", "yes", "on"):
         "kwargs": {},
         "retailer": "pinalli",
     }
+
+if os.environ.get("PRIMOR_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .primor import PrimorScraper
+    SCRAPER_REGISTRY["primor"] = {
+        "class": PrimorScraper,
+        "source_site": "primor",
+        "kwargs": {},
+        "retailer": "primor",
+    }
