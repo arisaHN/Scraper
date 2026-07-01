@@ -66,6 +66,9 @@ class Product(Base):
     retailer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     category_group: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # True once the product's true brand has been verified against its live page (Sephora
+    # cleanup of cross-brand-mislabeled products). NULL/False = not yet verified.
+    brand_checked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     brand: Mapped["Brand"] = relationship(back_populates="products")
