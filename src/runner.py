@@ -135,12 +135,12 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
     with get_session() as session:
         last_run = (
             session.query(ScrapeRun)
-            .filter_by(brand_id=brand_id, site=source_site, status=RunStatus.success)
+            .filter_by(brand_id=brand_id, site=source_site, retailer=retailer, status=RunStatus.success)
             .order_by(ScrapeRun.finished_at.desc())
             .first()
         )
         since = last_run.finished_at if last_run else None
-        run = ScrapeRun(brand_id=brand_id, site=source_site, status=RunStatus.running)
+        run = ScrapeRun(brand_id=brand_id, site=source_site, retailer=retailer, status=RunStatus.running)
         session.add(run)
         session.flush()
         run_id = run.id
@@ -234,12 +234,12 @@ def run_single_product(brand_id: int, brand_name: str, registry_key: str, produc
     with get_session() as session:
         last_run = (
             session.query(ScrapeRun)
-            .filter_by(brand_id=brand_id, site=source_site, status=RunStatus.success)
+            .filter_by(brand_id=brand_id, site=source_site, retailer=retailer, status=RunStatus.success)
             .order_by(ScrapeRun.finished_at.desc())
             .first()
         )
         since = last_run.finished_at if last_run else None
-        run = ScrapeRun(brand_id=brand_id, site=source_site, status=RunStatus.running)
+        run = ScrapeRun(brand_id=brand_id, site=source_site, retailer=retailer, status=RunStatus.running)
         session.add(run)
         session.flush()
         run_id = run.id

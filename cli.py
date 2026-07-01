@@ -149,26 +149,29 @@ def remove_retailer(retailer: str, yes: bool):
         )
 
         # Other retailers on the same brand/site share ScrapeRun bookkeeping (site isn't
-        # retailer-specific) — warn if deleting ScrapeRun rows here would also reset their
-        # incremental-scrape cursor.
+        # unique per retailer) — warn if deleting ScrapeRun rows here would also reset their
+        # incremental-scrape cursor. Checked against ScrapeRun.retailer itself (not just
+        # current Product rows), since a retailer can have scrape history for a brand/site
+        # after its products there were delisted/removed — Product-only detection would miss
+        # that and wrongly wipe the other retailer's cursor.
         shared = (
-            session.query(Product.brand_id, Product.source_site)
+            session.query(ScrapeRun.brand_id, ScrapeRun.site)
             .filter(
-                Product.source_site.in_(sites),
-                Product.retailer != retailer,
-                Product.brand_id.in_(brand_ids),
+                ScrapeRun.site.in_(sites),
+                ScrapeRun.retailer != retailer,
+                ScrapeRun.brand_id.in_(brand_ids),
             )
             .distinct()
             .all()
         )
 
-    # brand+site combos that still have OTHER retailers — skip deleting their ScrapeRun rows
-    # so their incremental-scrape cursor is preserved.
+    # brand+site combos that still have OTHER retailers' scrape history — skip deleting
+    # their ScrapeRun rows so their incremental-scrape cursor is preserved.
     shared_combos = {(b, s) for b, s in shared}
     if shared_combos:
         click.echo(
             "Note: scrape_runs for the following brand/site combos will NOT be deleted "
-            "because other retailers still have products there:"
+            "because other retailers still have scrape history there:"
         )
         for b, s in sorted(shared_combos):
             click.echo(f"  brand_id={b} site={s}")

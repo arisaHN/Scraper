@@ -63,6 +63,23 @@ _BV_CATEGORY_MAPS: dict[str, dict] = {
     "douglas": _DOUGLAS_CATEGORY_MAP,
 }
 
+# Retailers whose own product pages display syndicated reviews (reviews copied in from
+# another site on the same BV account), so scraping should include them to match what's
+# actually shown. Dior's own site (client "dior-it") aggregates and displays reviews
+# syndicated from other Dior country sites (e.g. SourceClient "dior-us") — verified:
+# the live product-page widget query has no IsSyndicated filter, and excluding syndicated
+# drops a product's review count from 2076 to 71. This is the manufacturer's own site
+# aggregating across country sites, unlike a retailer (e.g. Douglas) that only shows its
+# own natively-collected reviews.
+_BV_INCLUDE_SYNDICATED: set[str] = {"dior"}
+
+# Retailers whose catalog registers a separate product Id per shade/size variant, all
+# sharing one Bazaarvoice "family" review pool (see BazaarvoiceScraper.__init__ for the
+# live-verified mechanics). Collapses each family to a single representative product in
+# discover_products() instead of one DB row per variant. Dior's catalog is heavy with
+# these (e.g. ~30 Rouge Dior lipstick shades all sharing one family).
+_BV_DEDUPE_FAMILIES: set[str] = {"dior"}
+
 SCRAPER_REGISTRY: dict[str, dict] = {}
 
 for _key, _passkey in os.environ.items():
@@ -70,10 +87,18 @@ for _key, _passkey in os.environ.items():
         _retailer = _key[len("BV_PASSKEY_"):].lower()
         _locale = os.environ.get(f"BV_LOCALE_{_retailer.upper()}", os.environ.get("BV_LOCALE", "en_US"))
         _cat_map = _BV_CATEGORY_MAPS.get(_retailer, {})
+        _include_syndicated = _retailer in _BV_INCLUDE_SYNDICATED
+        _dedupe_family_variants = _retailer in _BV_DEDUPE_FAMILIES
         SCRAPER_REGISTRY[f"bazaarvoice_{_retailer}"] = {
             "class": BazaarvoiceScraper,
             "source_site": "bazaarvoice",
-            "kwargs": {"passkey": _passkey, "locale": _locale, "category_map": _cat_map},
+            "kwargs": {
+                "passkey": _passkey,
+                "locale": _locale,
+                "category_map": _cat_map,
+                "include_syndicated": _include_syndicated,
+                "dedupe_family_variants": _dedupe_family_variants,
+            },
             "retailer": _retailer,
         }
 
@@ -129,4 +154,13 @@ if os.environ.get("PINALLI_ENABLED", "").lower() in ("1", "true", "yes", "on"):
         "source_site": "pinalli",
         "kwargs": {},
         "retailer": "pinalli",
+    }
+
+if os.environ.get("PRIMOR_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    from .primor import PrimorScraper
+    SCRAPER_REGISTRY["primor"] = {
+        "class": PrimorScraper,
+        "source_site": "primor",
+        "kwargs": {},
+        "retailer": "primor",
     }

@@ -130,6 +130,33 @@ class ReviewNormalizer:
         return ReviewNormalizer.from_judgeme(raw, "ditano")
 
     @staticmethod
+    def from_primor(raw: dict, sku: str) -> NormalizedReview:
+        """Parse a review object from it.primor.eu's per-product reviews JSON blob.
+
+        No native review ID exists in the source, so external_review_id is a sha1 hash of
+        stable fields (sku/author/date/text) — dedup holds across re-fetches of the same
+        static payload, but a re-rendered/edited review would be treated as new (acceptable
+        known limitation). No title or verified-purchase flag exists either.
+        """
+        import hashlib
+
+        author = raw.get("nombre") or "Anonymous"
+        date_str = raw.get("fecha")
+        text = raw.get("comentario") or None
+        review_id = hashlib.sha1(f"{sku}|{author}|{date_str}|{text}".encode()).hexdigest()
+        return NormalizedReview(
+            external_review_id=review_id,
+            source_site="primor",
+            author=author,
+            rating=float(raw["rating"]) if raw.get("rating") not in (None, "") else None,
+            title=None,
+            text=text,
+            review_date=_parse_dt(date_str),
+            helpful_count=0,
+            verified=False,
+        )
+
+    @staticmethod
     def from_notino(raw: dict) -> NormalizedReview:
         """Parse a review object from notino.it's getReviews GraphQL response."""
         return NormalizedReview(

@@ -31,6 +31,7 @@ class SiteEnum(str, enum.Enum):
     sensation = "sensation"
     ditano = "ditano"
     pinalli = "pinalli"
+    primor = "primor"
 
 
 class RunStatus(str, enum.Enum):
@@ -123,6 +124,12 @@ class ScrapeRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id"), nullable=False)
     site: Mapped[str] = mapped_column(SAEnum(SiteEnum), nullable=False)
+    # Distinguishes retailers that share one source_site (e.g. "douglas"/"dior" both under
+    # site="bazaarvoice") so each gets its own incremental `since` cutoff — without this,
+    # two retailers on the same source_site collide in the "last successful run" lookup and
+    # a brand-new retailer's first run would wrongly inherit another retailer's cutoff.
+    # Nullable for pre-existing rows written before this column existed.
+    retailer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         SAEnum(RunStatus), default=RunStatus.running, nullable=False
     )
