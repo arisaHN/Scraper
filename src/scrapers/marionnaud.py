@@ -36,6 +36,21 @@ class MarionnaudScraper(CamoufoxBrowserMixin, BaseScraper):
     def _normalize(text: str) -> str:
         return re.sub(r"[^a-z0-9]", "", text.lower())
 
+    @staticmethod
+    def _category_from_hybris(p: dict) -> Optional[str]:
+        """Best-effort category label from the Hybris FULL-fields product payload.
+
+        Unverified against a live response (Akamai blocks a plain probe request) — the
+        standard Hybris OCC `categories` field is a list of `{code, name, ...}` dicts ordered
+        root-to-leaf, so the last entry is the most specific label. Returns None (no crash)
+        if the field is absent or shaped differently than expected.
+        """
+        categories = p.get("categories")
+        if not isinstance(categories, list) or not categories:
+            return None
+        name = categories[-1].get("name") if isinstance(categories[-1], dict) else None
+        return name or None
+
     def discover_products(self, brand_name: str) -> list[dict]:
         target = self._normalize(brand_name)
 
@@ -93,6 +108,7 @@ class MarionnaudScraper(CamoufoxBrowserMixin, BaseScraper):
                             "name": p.get("name") or code,
                             "source_url": f"https://www.marionnaud.it{p.get('url', '')}",
                             "external_id": code,
+                            "category": self._category_from_hybris(p),
                         },
                     )
                 current_page += 1

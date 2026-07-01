@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 
+from sqlalchemy import nulls_first
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .categories import category_group as _category_group
@@ -36,6 +37,32 @@ def _norm(s: str) -> str:
     return "".join(c for c in (s or "").casefold() if c.isalnum())
 
 
+def _sephora_scrape_list(brand_id: int) -> list[dict]:
+    """All genuine (brand_checked) Sephora products for a brand, least-recently-scraped first.
+
+    Decouples scraping from discovery so every verified product — including ones discovery
+    misses this run — gets its reviews updated over successive runs. Recency comes from each
+    product's backfill cursor `updated_at` (bumped every scrape); never-scraped products (no
+    cursor) sort first.
+    """
+    with get_session() as session:
+        rows = (
+            session.query(Product, SephoraBackfillCursor.updated_at)
+            .outerjoin(SephoraBackfillCursor, SephoraBackfillCursor.product_id == Product.id)
+            .filter(
+                Product.source_site == "sephora",
+                Product.brand_id == brand_id,
+                Product.brand_checked.is_(True),
+            )
+            .order_by(nulls_first(SephoraBackfillCursor.updated_at.asc()))
+            .all()
+        )
+        return [
+            {"external_id": p.external_id, "name": p.name, "source_url": p.source_url}
+            for p, _ in rows
+        ]
+
+
 def _remove_product(product_id: int) -> None:
     """Delete a product plus its reviews and any Sephora backfill cursor."""
     with get_session() as session:
@@ -44,22 +71,26 @@ def _remove_product(product_id: int) -> None:
         session.query(Product).filter_by(id=product_id).delete(synchronize_session=False)
 
 
-def _sephora_cleanup_batch(brand_id: int, source_site: str, brand_name: str, scraper, cap: int) -> tuple[int, int]:
+def _sephora_cleanup_batch(brand_id: int, source_site: str, brand_name: str, scraper, cap: int,
+                           exclude_ids: set = frozenset()) -> tuple[int, int]:
     """Verify the true brand of up to `cap` not-yet-checked products and delete any that
     belong to a different brand (cross-brand mislabels from the old discovery bug).
+
+    `exclude_ids` (external ids returned by discovery this run) are skipped — they're genuine
+    and get marked brand_checked during scraping, so the budget targets actual suspects.
 
     An Akamai block raises inside `fetch_brand`, so a blocked page never causes a deletion;
     consecutive blocks abort the batch early (progress resumes next run via `brand_checked`).
     """
     target = _norm(brand_name)
     with get_session() as session:
-        rows = (
+        q = (
             session.query(Product)
             .filter_by(source_site=source_site, brand_id=brand_id, brand_checked=False)
-            .order_by(Product.id)
-            .limit(cap)
-            .all()
         )
+        if exclude_ids:
+            q = q.filter(Product.external_id.notin_(exclude_ids))
+        rows = q.order_by(Product.id).limit(cap).all()
         suspects = [(p.id, p.external_id, p.name, p.source_url) for p in rows]
 
     checked = removed = fails = 0
@@ -118,18 +149,35 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
 
     count = 0
     try:
-        # Sephora only: verify a capped batch of not-yet-checked products' true brand and
-        # delete cross-brand mislabels left by the old discovery bug. Runs FIRST, before the
-        # heavy review scraping, so it (a) always runs even when scraping later hits an Akamai
-        # block and returns early, and (b) uses the freshest request budget of the run.
-        if source_site == "sephora" and SEPHORA_VERIFY_PER_RUN > 0:
-            try:
-                _sephora_cleanup_batch(brand_id, source_site, brand_name, scraper, SEPHORA_VERIFY_PER_RUN)
-            except Exception as exc:
-                print(f"  [sephora-cleanup] skipped — {exc}", flush=True)
+        discovered = scraper.discover_products(brand_name)
+        print(f"  [{registry_key}] {len(discovered)} products found", flush=True)
 
-        products = scraper.discover_products(brand_name)
-        print(f"  [{registry_key}] {len(products)} products found", flush=True)
+        if source_site == "sephora":
+            # Discovery is brand-scoped, so every discovered product is genuinely this brand:
+            # upsert it (so brand-new ones exist) and mark it brand_checked up-front. This
+            # verifies the whole set in one run with no per-page reads, regardless of where
+            # the review scraping below is later blocked.
+            for prod_data in discovered:
+                pid = _upsert_product(brand_id, source_site, prod_data, retailer=retailer)
+                with get_session() as session:
+                    session.query(Product).filter_by(id=pid).update({"brand_checked": True})
+
+            # Verify + delete cross-brand mislabels among the NOT-discovered unchecked products
+            # (the actual suspects), capped per run. Runs before scraping so a block never
+            # skips it; blocked pages never cause a deletion (see _sephora_cleanup_batch).
+            if SEPHORA_VERIFY_PER_RUN > 0:
+                discovered_ids = {p["external_id"] for p in discovered}
+                try:
+                    _sephora_cleanup_batch(brand_id, source_site, brand_name, scraper,
+                                           SEPHORA_VERIFY_PER_RUN, exclude_ids=discovered_ids)
+                except Exception as exc:
+                    print(f"  [sephora-cleanup] skipped — {exc}", flush=True)
+
+        # Scrape list: for Sephora, ALL genuine DB products least-recently-scraped first (so
+        # every verified product gets a turn over runs, not just today's discovery). Other
+        # sites scrape exactly what discovery returned.
+        products = _sephora_scrape_list(brand_id) if source_site == "sephora" else discovered
+        print(f"  [{registry_key}] scraping {len(products)} products", flush=True)
 
         consecutive_failures = 0
         for i, prod_data in enumerate(products, 1):
@@ -143,13 +191,6 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                 n_fetched, n_inserted = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
                 count += n_inserted
                 consecutive_failures = 0
-                # Sephora: the product page was just loaded during scraping, so mark this
-                # (brand-scoped discovery => genuine) product brand_checked for free — the
-                # cleanup batch then only spends its capped budget on the un-scraped fakes.
-                brand = getattr(scraper, "product_brand", None)
-                if source_site == "sephora" and brand and _norm(brand_name) in _norm(brand):
-                    with get_session() as session:
-                        session.query(Product).filter_by(id=prod_id).update({"brand_checked": True})
                 if n_inserted:
                     backfill_note = ""
                     if supports_backfill:

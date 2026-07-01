@@ -20,6 +20,14 @@ _REVIEWS_HASH = os.environ.get(
 )
 
 
+# Candidate keys the product's own SSR JSON node might carry a category label under.
+# Unverified against a live listing (Notino's brand pages mix categories, so a per-product
+# label — if present at all — would have to live on the node itself rather than being
+# inferable from crawl structure like Sephora's category tabs). None of these being present
+# just leaves category unset; no extra request is made to find out.
+_CATEGORY_KEYS = ("categoryName", "primaryCategoryName", "category")
+
+
 def _collect_notino_products(obj: object, products: dict) -> None:
     """Iterative DFS over parsed JSON; collects all dicts that have masterProductCode."""
     stack = [obj]
@@ -30,8 +38,19 @@ def _collect_notino_products(obj: object, products: dict) -> None:
             if isinstance(code, str) and code and code not in products:
                 name = node.get("name")
                 url = node.get("url")
+                category = None
+                for key in _CATEGORY_KEYS:
+                    val = node.get(key)
+                    if isinstance(val, str) and val:
+                        category = val
+                        break
                 if isinstance(name, str) and name:
-                    products[code] = {"code": code, "name": name, "url": url if isinstance(url, str) else None}
+                    products[code] = {
+                        "code": code,
+                        "name": name,
+                        "url": url if isinstance(url, str) else None,
+                        "category": category,
+                    }
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
@@ -168,6 +187,7 @@ class NotinoScraper(CamoufoxBrowserMixin, BaseScraper):
                 "name": item["name"],
                 "source_url": f"https://www.notino.it{item.get('url', '')}",
                 "external_id": item["code"],
+                "category": item.get("category"),
             } for item in all_products.values())
 
         # Read total page count from the listing JSON
@@ -196,6 +216,7 @@ class NotinoScraper(CamoufoxBrowserMixin, BaseScraper):
                 "name": item["name"],
                 "source_url": f"https://www.notino.it{item.get('url', '')}",
                 "external_id": item["code"],
+                "category": item.get("category"),
             }
             for item in all_products.values()
         ]

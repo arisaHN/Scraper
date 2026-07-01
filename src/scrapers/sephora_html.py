@@ -43,6 +43,11 @@ def _brand_slug_from_href(href: Optional[str]) -> Optional[str]:
     m = re.search(r"/dalla-a-alla-z/([^/]+)/", href)
     return m.group(1) if m else None
 
+# How long to wait for a product page to render before giving up. Kept short so Akamai
+# "Access Denied" pages (which never reach the content threshold) fail fast instead of
+# burning ~30s each; a genuinely rendering page is well under this.
+_PAGE_WAIT_MS = int(os.environ.get("SEPHORA_PAGE_WAIT_MS", "9000"))
+
 REVIEWS_LIMIT = 22
 REVIEWS_SORT_DESC = "SubmissionTime:desc"
 REVIEWS_SORT_ASC = "SubmissionTime:asc"
@@ -211,13 +216,17 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         self.backfill_offset: Optional[int] = None
         self.backfill_completed: bool = False
         self.backfill_total: Optional[int] = None
-        # The true brand slug (e.g. "dior-dior") read off the product page during
-        # scrape_reviews(); runner.py reads it to mark the product brand_checked for free.
-        self.product_brand: Optional[str] = None
 
     def _wait_and_consent(self, page, url: str):
         page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_function("document.body && document.body.innerHTML.length > 10000", timeout=30_000)
+        # A blocked "Access Denied" page never grows past this length threshold, so it would
+        # otherwise burn the full timeout. Keep it short (env-overridable) so blocked pages
+        # fail fast — a real page renders well under it — instead of ~30s each before the run
+        # aborts on consecutive failures.
+        page.wait_for_function(
+            "document.body && document.body.innerHTML.length > 10000",
+            timeout=_PAGE_WAIT_MS,
+        )
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
@@ -260,17 +269,31 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
                     flush=True,
                 )
 
-            # Collect category IDs (scgid=C*) from hub page — used for per-category SFCC lookups
-            scgid_hrefs = page.evaluate(f"""() =>
-                [...new Set(
-                    [...document.querySelectorAll('a[href]')]
-                        .map(a => a.getAttribute('href'))
-                        .filter(h => h && h.includes('{brand_lower}-{brand_lower}') && h.includes('scgid=C'))
-                        .map(h => h.split('#')[0])
-                )]
-            """)
-            cgids = list({re.search(r'scgid=(C\w+)', h).group(1) for h in scgid_hrefs if re.search(r'scgid=(C\w+)', h)})
-            print(f"  [sephora] hub page: {len(scgid_hrefs)} category links → {len(cgids)} category ids", flush=True)
+            # Collect category IDs (scgid=C*) from hub page — used for per-category SFCC lookups.
+            # The hub page reuses the same scgid= URLs in several unrelated nav sections: a
+            # brand mega-menu (link text is just the brand name), promotional banners (link
+            # text is a generic "SCOPRI"/"Discover" CTA), and the actual category tab list —
+            # the only one rendered as a plain `<li><a>Label</a></li>` with no class anywhere.
+            # Only that shape gives real labels (e.g. "Profumi", "Make-up", "Capelli"),
+            # captured here for free since we already visit each category tab below.
+            scgid_links = page.evaluate(f"""() => {{
+                const seen = new Map();
+                for (const a of document.querySelectorAll('li > a[href]')) {{
+                    if (a.className || (a.parentElement && a.parentElement.className)) continue;
+                    const href = a.getAttribute('href');
+                    if (!href || !href.includes('{brand_lower}-{brand_lower}') || !href.includes('scgid=C')) continue;
+                    const key = href.split('#')[0];
+                    if (!seen.has(key)) seen.set(key, a.textContent.trim());
+                }}
+                return [...seen.entries()];
+            }}""")
+            cgid_labels: dict[str, str] = {}
+            for href, text in scgid_links:
+                m = re.search(r'scgid=(C\w+)', href)
+                if m and text:
+                    cgid_labels.setdefault(m.group(1), text)
+            cgids = list(cgid_labels)
+            print(f"  [sephora] hub page: {len(scgid_links)} category links → {len(cgids)} category ids", flush=True)
 
             # Visit each brand category tab and read the rendered product grid from the DOM.
             #
@@ -281,6 +304,7 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
             # Product URLs are unchanged (/p/...-P<digits>.html), so we just scrape the links
             # the grid renders, scrolling to trigger its lazy loading.
             unique: dict[str, str] = {}
+            categories: dict[str, str] = {}
 
             def _extract_category(cgid: str) -> int:
                 # sz=300 lifts the grid's default 24-item page; the rest still lazy-loads on
@@ -323,6 +347,7 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
                         found += 1
                         full = url if url.startswith("http") else f"https://www.sephora.it{url}"
                         unique.setdefault(m.group(1), full)
+                        categories.setdefault(m.group(1), cgid_labels.get(cgid))
                 return found
 
             for cgid in cgids:
@@ -340,7 +365,7 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         for pid, url in unique.items():
             raw_slug = url.rsplit("/", 1)[-1].replace(f"-{pid}.html", "")
             name = unquote(raw_slug).replace("-", " ").title()
-            results.append({"name": name, "source_url": url, "external_id": pid})
+            results.append({"name": name, "source_url": url, "external_id": pid, "category": categories.get(pid)})
         return results
 
     def fetch_brand(self, product: dict) -> Optional[str]:
@@ -422,7 +447,6 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         self.backfill_offset = backfill_offset
         self.backfill_completed = False
         self.backfill_total = None
-        self.product_brand = None
 
         product_url = product.get("source_url")
         if not product_url:
@@ -437,16 +461,6 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         page = self._new_page()
         try:
             self._wait_and_consent(page, product_url)
-
-            # Read the true brand off the page we just loaded (free — no extra request), so
-            # runner.py can mark this product brand_checked without the cleanup batch having
-            # to reload it. Best-effort: a parse hiccup must not abort review scraping.
-            try:
-                info = page.evaluate(_BRAND_JS)
-                if (info.get("line") or "").strip().lower() != "access denied":
-                    self.product_brand = _brand_slug_from_href(info.get("href"))
-            except Exception:
-                pass
 
             # Watermark pass: newest-first, stops as soon as we hit a review older than
             # `since`. Only runs once a prior successful run exists — on a brand-new

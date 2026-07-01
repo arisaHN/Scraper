@@ -45,6 +45,14 @@ CATEGORY_GROUP: dict[str, str] = {
     "Makeup": "Makeup",
     "Hair": "Haircare",
     "Solari": "Body Care",
+    # sephora.it (hub-page category tab labels, Italian) — verified against Dior's tabs;
+    # other brands may surface additional tabs not yet seen, which fall back to None here
+    # until added.
+    "Make-up": "Makeup",
+    "Trattamenti Viso": "Skincare",
+    "Profumi": "Fragrance",
+    "Capelli": "Haircare",
+    "Corpo & Bagno": "Body Care",
 }
 
 
