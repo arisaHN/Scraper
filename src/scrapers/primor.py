@@ -27,6 +27,9 @@ def _norm(name: str) -> str:
     return "".join(ch for ch in name.casefold() if ch.isalnum())
 
 
+_VARIANT_ID_RE = re.compile(r"#variant-(.+)$")
+
+
 def _extract_product_jsonld(html: str) -> Optional[dict]:
     """Find the plain schema.org Product JSON-LD block (data-company="mageworx"), which
     has clean sku/brand.name/category fields — distinct from a second, GS1-vocabulary
@@ -40,6 +43,36 @@ def _extract_product_jsonld(html: str) -> Optional[dict]:
         if data.get("@type") == "Product":
             return data
     return None
+
+
+def _extract_variant_skus(html: str) -> list[str]:
+    """Return child-variant SKUs from the gs1:Product JSON-LD block's gs1:hasVariant list.
+
+    Configurable (multi-size) products' plain Product.sku is a shared parent/master SKU
+    (observed with an "M-" prefix, e.g. "M-4AM03121") that has no reviews page of its own —
+    fetching it returns HTTP 200 with an empty body. Each real, purchasable variant (e.g.
+    60ML/100ML/150ML) has its own SKU, embedded in this block as the "#variant-<sku>"
+    fragment of its @id, and each has an independent reviews page. Simple (single-SKU,
+    non-configurable) products have no gs1:hasVariant at all, so this returns [] for them
+    and the caller falls back to the plain Product.sku.
+    """
+    for raw in _JSONLD_RE.findall(html):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        if data.get("@type") != "gs1:Product":
+            continue
+        variants = data.get("gs1:hasVariant") or []
+        if isinstance(variants, dict):
+            variants = [variants]
+        skus = []
+        for v in variants:
+            m = _VARIANT_ID_RE.search(v.get("@id") or "")
+            if m:
+                skus.append(m.group(1))
+        return skus
+    return []
 
 
 class PrimorScraper(BaseScraper):
@@ -57,14 +90,20 @@ class PrimorScraper(BaseScraper):
     Reviews: despite Trusted Shops domains appearing in the site's CSP, review data is not
     scraped HTML — it's a clean JSON blob embedded in the reviews page
     (``<script type="applications/json" id="pr-reviews-json">``), fetched from a static,
-    unauthenticated CloudFront/S3 URL derived from the product's SKU by splitting its first
-    six characters into path segments (e.g. SKU "0TF14305" ->
-    ".../it/0/T/F/1/4/3/0TF14305_reviews.html"). No native per-review ID exists in that
-    payload, so ``external_review_id`` is a sha1 hash of stable fields (sku/author/date/
-    text) — stable across re-fetches, but a re-rendered/edited review would be treated as
-    new. No verified-purchase flag or review title exists either. Review order isn't
-    confirmed sorted, so each review is filtered against ``since`` individually rather than
-    early-stopping.
+    unauthenticated CloudFront/S3 URL derived from a SKU by splitting its first six
+    characters into path segments (e.g. SKU "0TF14305" ->
+    ".../it/0/T/F/1/4/3/0TF14305_reviews.html"). **Configurable (multi-size) products**
+    don't use the plain Product block's ``sku`` for this — that's a shared parent/master
+    SKU (observed with an "M-" prefix) whose reviews URL returns HTTP 200 with an empty
+    body. Instead, ``scrape_reviews()`` reads each real child-variant SKU from the
+    ``gs1:Product`` block's ``gs1:hasVariant`` list (``_extract_variant_skus()``) and
+    aggregates reviews across every variant's own reviews page; simple (single-SKU)
+    products have no ``gs1:hasVariant`` and fall back to the plain ``sku`` as before. No
+    native per-review ID exists in the payload, so ``external_review_id`` is a sha1 hash of
+    stable fields (sku/author/date/text) — stable across re-fetches, but a re-rendered/
+    edited review would be treated as new. No verified-purchase flag or review title exists
+    either. Review order isn't confirmed sorted, so each review is filtered against
+    ``since`` individually rather than early-stopping.
     """
 
     site_name = "primor"
@@ -76,12 +115,12 @@ class PrimorScraper(BaseScraper):
     # isn't reliable. Retry a few times before treating a product as having no SKU/brand data.
     _JSONLD_FETCH_ATTEMPTS = 4
 
-    def _fetch_product_jsonld(self, url: str) -> Optional[dict]:
+    def _fetch_verified_html(self, url: str) -> Optional[str]:
+        """Fetch a product page, retrying until the Product JSON-LD block is present."""
         for _ in range(self._JSONLD_FETCH_ATTEMPTS):
             html = self._get(url).text
-            data = _extract_product_jsonld(html)
-            if data:
-                return data
+            if _extract_product_jsonld(html):
+                return html
         return None
 
     # ── product discovery ─────────────────────────────────────────────────────────
@@ -112,12 +151,13 @@ class PrimorScraper(BaseScraper):
             if external_id in products:
                 continue
             try:
-                data = self._fetch_product_jsonld(url)
+                html = self._fetch_verified_html(url)
             except Exception as exc:
                 print(f"  [primor] skip {url} — page fetch failed: {exc}", flush=True)
                 continue
-            if not data:
+            if not html:
                 continue
+            data = _extract_product_jsonld(html)
             brand_field = data.get("brand") or {}
             brand_field_name = brand_field.get("name") if isinstance(brand_field, dict) else brand_field
             if _norm(brand_field_name or "") != target:
@@ -146,23 +186,32 @@ class PrimorScraper(BaseScraper):
         backfill_offset: Optional[int] = None,
         max_backfill_pages: Optional[int] = None,
     ) -> Iterator[NormalizedReview]:
-        data = self._fetch_product_jsonld(product["source_url"])
-        sku = (data.get("sku") or data.get("productID")) if data else None
-        if not sku:
+        html = self._fetch_verified_html(product["source_url"])
+        if not html:
+            print(f"  [primor] no product data found for {product['source_url']}", flush=True)
+            return
+
+        skus = _extract_variant_skus(html)
+        if not skus:
+            data = _extract_product_jsonld(html)
+            sku = (data.get("sku") or data.get("productID")) if data else None
+            skus = [sku] if sku else []
+        if not skus:
             print(f"  [primor] no SKU found for {product['source_url']}", flush=True)
             return
 
-        resp = self._get(self._reviews_url(sku))
-        m = _REVIEWS_JSON_RE.search(resp.text)
-        if not m:
-            return
-        try:
-            payload = json.loads(m.group(1))
-        except Exception:
-            return
-
-        for raw in payload.get("reviews") or []:
-            review = ReviewNormalizer.from_primor(raw, sku)
-            if self._past_cutoff(review.review_date, since):
+        for sku in skus:
+            resp = self._get(self._reviews_url(sku))
+            m = _REVIEWS_JSON_RE.search(resp.text)
+            if not m:
+                continue  # this variant has no reviews yet — not fatal, check the next one
+            try:
+                payload = json.loads(m.group(1))
+            except Exception:
                 continue
-            yield review
+
+            for raw in payload.get("reviews") or []:
+                review = ReviewNormalizer.from_primor(raw, sku)
+                if self._past_cutoff(review.review_date, since):
+                    continue
+                yield review
