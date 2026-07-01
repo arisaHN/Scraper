@@ -20,10 +20,77 @@ SKIP_RECOVERY_SLEEP = int(os.environ.get("SKIP_RECOVERY_SLEEP", "20"))
 
 # How many backfill pages (22 reviews each) a scraper that supports_backfill may fetch
 # per product per run. Calibrated empirically against sephora.it: ~305 requests in one
-# continuous run was enough to trip Akamai's request-volume-based blocking, so this is
-# kept well under that (5 pages = ~110 reviews/run) and the cursor persists progress
-# across runs rather than fetching a product's full history in one pass.
-SEPHORA_BACKFILL_PAGES_PER_RUN = int(os.environ.get("SEPHORA_BACKFILL_PAGES_PER_RUN", "5"))
+# continuous run was enough to trip Akamai's request-volume-based blocking. Default is 1
+# page (~22 reviews/product/run) to minimise per-product request volume — the cursor
+# persists progress across runs, so deep histories still complete, just over more runs.
+# Raise via the env var only if you're comfortably clear of blocks.
+SEPHORA_BACKFILL_PAGES_PER_RUN = int(os.environ.get("SEPHORA_BACKFILL_PAGES_PER_RUN", "1"))
+
+# How many not-yet-verified Sephora products to brand-check per run. Each check is one page
+# load, so this is capped (like the backfill) to stay under Akamai's volume threshold; the
+# `brand_checked` flag persists progress so the whole DB is cleaned over successive runs.
+SEPHORA_VERIFY_PER_RUN = int(os.environ.get("SEPHORA_VERIFY_PER_RUN", "15"))
+
+
+def _norm(s: str) -> str:
+    return "".join(c for c in (s or "").casefold() if c.isalnum())
+
+
+def _remove_product(product_id: int) -> None:
+    """Delete a product plus its reviews and any Sephora backfill cursor."""
+    with get_session() as session:
+        session.query(SephoraBackfillCursor).filter_by(product_id=product_id).delete(synchronize_session=False)
+        session.query(Review).filter_by(product_id=product_id).delete(synchronize_session=False)
+        session.query(Product).filter_by(id=product_id).delete(synchronize_session=False)
+
+
+def _sephora_cleanup_batch(brand_id: int, source_site: str, brand_name: str, scraper, cap: int) -> tuple[int, int]:
+    """Verify the true brand of up to `cap` not-yet-checked products and delete any that
+    belong to a different brand (cross-brand mislabels from the old discovery bug).
+
+    An Akamai block raises inside `fetch_brand`, so a blocked page never causes a deletion;
+    consecutive blocks abort the batch early (progress resumes next run via `brand_checked`).
+    """
+    target = _norm(brand_name)
+    with get_session() as session:
+        rows = (
+            session.query(Product)
+            .filter_by(source_site=source_site, brand_id=brand_id, brand_checked=False)
+            .order_by(Product.id)
+            .limit(cap)
+            .all()
+        )
+        suspects = [(p.id, p.external_id, p.name, p.source_url) for p in rows]
+
+    checked = removed = fails = 0
+    for pid, ext, name, url in suspects:
+        try:
+            slug = scraper.fetch_brand({"external_id": ext, "source_url": url})
+        except Exception as exc:
+            fails += 1
+            print(f"  [sephora-cleanup] block/error on {ext} — {exc}", flush=True)
+            time.sleep(SKIP_RECOVERY_SLEEP)
+            if fails >= MAX_CONSECUTIVE_FAILURES:
+                print("  [sephora-cleanup] aborting batch (likely Akamai block)", flush=True)
+                break
+            continue
+        fails = 0
+        if slug is None:
+            continue  # brand unreadable but page loaded — leave unchecked, retry next run
+        if target and target in _norm(slug):
+            with get_session() as session:
+                session.query(Product).filter_by(id=pid).update({"brand_checked": True})
+            checked += 1
+        else:
+            _remove_product(pid)
+            removed += 1
+            print(f"  [sephora-cleanup] removed mislabeled {ext} ({(name or '')[:40]}) → real brand '{slug}'", flush=True)
+        scraper._polite_delay()
+
+    if suspects:
+        print(f"  [sephora-cleanup] batch done: {checked} confirmed, {removed} removed, "
+              f"{len(suspects) - checked - removed} deferred", flush=True)
+    return checked, removed
 
 
 def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
@@ -51,6 +118,16 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
 
     count = 0
     try:
+        # Sephora only: verify a capped batch of not-yet-checked products' true brand and
+        # delete cross-brand mislabels left by the old discovery bug. Runs FIRST, before the
+        # heavy review scraping, so it (a) always runs even when scraping later hits an Akamai
+        # block and returns early, and (b) uses the freshest request budget of the run.
+        if source_site == "sephora" and SEPHORA_VERIFY_PER_RUN > 0:
+            try:
+                _sephora_cleanup_batch(brand_id, source_site, brand_name, scraper, SEPHORA_VERIFY_PER_RUN)
+            except Exception as exc:
+                print(f"  [sephora-cleanup] skipped — {exc}", flush=True)
+
         products = scraper.discover_products(brand_name)
         print(f"  [{registry_key}] {len(products)} products found", flush=True)
 
@@ -66,6 +143,13 @@ def run_brand(brand_id: int, brand_name: str, registry_key: str) -> int:
                 n_fetched, n_inserted = _scrape_product(scraper, prod_id, prod_data, product_since, supports_backfill)
                 count += n_inserted
                 consecutive_failures = 0
+                # Sephora: the product page was just loaded during scraping, so mark this
+                # (brand-scoped discovery => genuine) product brand_checked for free — the
+                # cleanup batch then only spends its capped budget on the un-scraped fakes.
+                brand = getattr(scraper, "product_brand", None)
+                if source_site == "sephora" and brand and _norm(brand_name) in _norm(brand):
+                    with get_session() as session:
+                        session.query(Product).filter_by(id=prod_id).update({"brand_checked": True})
                 if n_inserted:
                     backfill_note = ""
                     if supports_backfill:

@@ -12,6 +12,37 @@ from .base import BaseScraper, CamoufoxBrowserMixin
 BRAND_HUB_URL     = "https://www.sephora.it/{brand_lower}/{brand_upper}-HubPage.html"
 BRAND_CATALOG_URL = "https://www.sephora.it/marche/dalla-a-alla-z/{brand_lower}-{brand_lower}/"
 
+# Distinct product-detail links (/p/...-P<digits>.html) currently rendered in the DOM.
+_PRODUCT_HREFS_JS = (
+    "() => [...new Set([...document.querySelectorAll('a[href]')]"
+    ".map(a => a.getAttribute('href'))"
+    ".filter(h => h && /-P\\d+\\.html/.test(h)))]"
+)
+
+# Read a product's true brand off its rendered page: the first line of the H1 is the brand
+# name (e.g. "DIOR", "ARMANI"), and the brand link next to it points to
+# /marche/dalla-a-alla-z/<brand-slug>/. Used to detect products mislabeled under the wrong
+# brand by the old discovery bug.
+_BRAND_JS = """() => {
+  const h1 = document.querySelector('h1');
+  let href = null, line = null;
+  if (h1) {
+    line = (h1.innerText || '').split('\\n')[0].trim();
+    let el = h1;
+    for (let i = 0; i < 4 && el; i++) { el = el.parentElement; if (!el) break;
+      const a = el.querySelector('a[href*="/marche/dalla-a-alla-z/"]');
+      if (a) { href = a.getAttribute('href'); break; } }
+  }
+  return { href, line };
+}"""
+
+
+def _brand_slug_from_href(href: Optional[str]) -> Optional[str]:
+    if not href:
+        return None
+    m = re.search(r"/dalla-a-alla-z/([^/]+)/", href)
+    return m.group(1) if m else None
+
 REVIEWS_LIMIT = 22
 REVIEWS_SORT_DESC = "SubmissionTime:desc"
 REVIEWS_SORT_ASC = "SubmissionTime:asc"
@@ -180,6 +211,9 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         self.backfill_offset: Optional[int] = None
         self.backfill_completed: bool = False
         self.backfill_total: Optional[int] = None
+        # The true brand slug (e.g. "dior-dior") read off the product page during
+        # scrape_reviews(); runner.py reads it to mark the product brand_checked for free.
+        self.product_brand: Optional[str] = None
 
     def _wait_and_consent(self, page, url: str):
         page.goto(url, wait_until="domcontentloaded", timeout=60_000)
@@ -206,6 +240,26 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         try:
             self._wait_and_consent(page, hub_url)
 
+            # Diagnostics: a silent "0 products" is almost always an Akamai IP block (the hub
+            # page comes back as an "Access Denied" shell) rather than a genuinely empty brand.
+            # Surface enough state to tell those apart in the run log.
+            diag = page.evaluate("""() => ({
+                title: document.title,
+                bodyLen: document.body ? document.body.innerHTML.length : 0,
+                totalLinks: document.querySelectorAll('a[href]').length,
+                blocked: /access denied|reference\\s*#?\\d|akamai|errors\\.edgesuite/i.test(
+                    (document.body && document.body.innerText || '').slice(0, 4000)
+                ),
+            })""")
+            if diag.get("blocked") or diag.get("totalLinks", 0) == 0:
+                print(
+                    f"  [sephora] WARNING: hub page looks blocked/empty — "
+                    f"title={diag.get('title')!r} bodyLen={diag.get('bodyLen')} "
+                    f"links={diag.get('totalLinks')} blocked={diag.get('blocked')}. "
+                    f"This is typically an Akamai IP block, not an empty brand.",
+                    flush=True,
+                )
+
             # Collect category IDs (scgid=C*) from hub page — used for per-category SFCC lookups
             scgid_hrefs = page.evaluate(f"""() =>
                 [...new Set(
@@ -216,44 +270,67 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
                 )]
             """)
             cgids = list({re.search(r'scgid=(C\w+)', h).group(1) for h in scgid_hrefs if re.search(r'scgid=(C\w+)', h)})
+            print(f"  [sephora] hub page: {len(scgid_hrefs)} category links → {len(cgids)} category ids", flush=True)
 
-            # Use SFCC's own Search-Show AJAX endpoint, called via fetch() inside the live
-            # browser tab so it carries the Akamai-validated session cookies. Direct
-            # page.goto() to the catalog URL is blocked; this in-page fetch is not.
-            # Each query uses both cgid= (category) and prefn1/prefv1 (brand refinement):
-            # cgid= alone returns all brands in that category (e.g. a search for "Eau de
-            # Parfum" returns Chanel, Mugler, etc. alongside Dior). The brand filter pins
-            # results to this brand only.
+            # Visit each brand category tab and read the rendered product grid from the DOM.
+            #
+            # Sephora moved the category grid to client-side rendering: the old
+            # Search-Show?format=ajax fetch (and the prefn1=brand&prefv1= refinement) now
+            # return an empty page shell — no product tiles. The grid is brand-scoped by the
+            # /{brand}-{brand}/ catalog path itself, so no separate brand filter is needed.
+            # Product URLs are unchanged (/p/...-P<digits>.html), so we just scrape the links
+            # the grid renders, scrolling to trigger its lazy loading.
             unique: dict[str, str] = {}
 
-            # URL-encode the brand name for use as a SFCC refinement value.
-            from urllib.parse import quote as _quote
-            brand_param = _quote(brand_name, safe="")
-
-            def _fetch_sfcc(params: str) -> None:
-                html = page.evaluate(f"""async () => {{
-                    const resp = await fetch(
-                        "/on/demandware.store/Sites-Sephora_IT-Site/it_IT/Search-Show?{params}&sz=500&format=ajax",
-                        {{headers: {{"X-Requested-With": "XMLHttpRequest"}}}}
-                    );
-                    return await resp.text();
-                }}""")
-                decoded = unescape(html)
-                for url in re.findall(r'https://www\.sephora\.it/p/[^\s"&]+\.html', decoded):
+            def _extract_category(cgid: str) -> int:
+                # sz=300 lifts the grid's default 24-item page; the rest still lazy-loads on
+                # scroll, so we scroll until the rendered product count stops growing.
+                cat_url = f"{BRAND_CATALOG_URL.format(brand_lower=brand_lower)}?scgid={cgid}&sz=300"
+                # Camoufox→Sephora occasionally throws a transient HTTP/3 (QUIC) error
+                # (NS_ERROR_NET_HTTP3_PROTOCOL_ERROR); retry the navigation a few times.
+                for attempt in range(3):
+                    try:
+                        page.goto(cat_url, wait_until="domcontentloaded", timeout=60_000)
+                        break
+                    except Exception as exc:
+                        if attempt == 2:
+                            raise
+                        print(f"  [sephora] category {cgid}: retry navigation ({exc.__class__.__name__})", flush=True)
+                        page.wait_for_timeout(2000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15_000)
+                except Exception:
+                    pass
+                # Lazy grid — scroll until the product-link count stops growing. Allow a few
+                # extra no-growth passes since the grid can stall briefly mid-load.
+                prev = -1
+                stalls = 0
+                for _ in range(40):
+                    hrefs = page.evaluate(_PRODUCT_HREFS_JS)
+                    if len(hrefs) <= prev:
+                        stalls += 1
+                        if stalls >= 3:
+                            break
+                    else:
+                        stalls = 0
+                    prev = len(hrefs)
+                    page.mouse.wheel(0, 6000)
+                    page.wait_for_timeout(1200)
+                found = 0
+                for url in page.evaluate(_PRODUCT_HREFS_JS):
                     m = re.search(r"-(P\d+)\.html", url)
                     if m:
-                        pid = m.group(1)
-                        if pid not in unique:
-                            unique[pid] = url
+                        found += 1
+                        full = url if url.startswith("http") else f"https://www.sephora.it{url}"
+                        unique.setdefault(m.group(1), full)
+                return found
 
             for cgid in cgids:
                 try:
-                    # cgid= scopes to the category, prefn1/prefv1 further restrict to
-                    # this brand only — without the brand filter, cgid= returns all
-                    # brands in that category (e.g. Chanel Chance in "Eau de Parfum").
-                    _fetch_sfcc(f"cgid={cgid}&prefn1=brand&prefv1={brand_param}")
-                except Exception:
-                    pass
+                    n = _extract_category(cgid)
+                    print(f"  [sephora] category {cgid}: {n} product links", flush=True)
+                except Exception as exc:
+                    print(f"  [sephora] category {cgid}: error — {exc}", flush=True)
                 self._polite_delay()
 
         finally:
@@ -265,6 +342,28 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
             name = unquote(raw_slug).replace("-", " ").title()
             results.append({"name": name, "source_url": url, "external_id": pid})
         return results
+
+    def fetch_brand(self, product: dict) -> Optional[str]:
+        """Return a product's true brand slug (e.g. ``dior-dior``) from its rendered page.
+
+        Used to detect products the old discovery bug filed under the wrong brand. Raises on
+        an Akamai "Access Denied" page so a *block* is never mistaken for "different brand"
+        (which would wrongly delete a genuine product). Returns None only when the page loaded
+        but no brand element was found (ambiguous — caller should not delete).
+        """
+        url = product.get("source_url")
+        if not url:
+            return None
+        page = self._new_page()
+        try:
+            self._wait_and_consent(page, url)
+            info = page.evaluate(_BRAND_JS)
+            line = (info.get("line") or "").strip()
+            if not info or line.lower() == "access denied":
+                raise RuntimeError(f"Akamai block reading brand for {product.get('external_id')}")
+            return _brand_slug_from_href(info.get("href"))
+        finally:
+            page.close()
 
     # ── review fetching: the open product-page tab issues the POST itself via fetch() ──
 
@@ -323,6 +422,7 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         self.backfill_offset = backfill_offset
         self.backfill_completed = False
         self.backfill_total = None
+        self.product_brand = None
 
         product_url = product.get("source_url")
         if not product_url:
@@ -337,6 +437,16 @@ class SephoraHTMLScraper(CamoufoxBrowserMixin, BaseScraper):
         page = self._new_page()
         try:
             self._wait_and_consent(page, product_url)
+
+            # Read the true brand off the page we just loaded (free — no extra request), so
+            # runner.py can mark this product brand_checked without the cleanup batch having
+            # to reload it. Best-effort: a parse hiccup must not abort review scraping.
+            try:
+                info = page.evaluate(_BRAND_JS)
+                if (info.get("line") or "").strip().lower() != "access denied":
+                    self.product_brand = _brand_slug_from_href(info.get("href"))
+            except Exception:
+                pass
 
             # Watermark pass: newest-first, stops as soon as we hit a review older than
             # `since`. Only runs once a prior successful run exists — on a brand-new
